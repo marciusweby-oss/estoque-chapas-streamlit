@@ -5,3 +5,5 @@ openpyxl
 xlsxwriter
 firebase-admin
 plotly
+fpdf2
+kaleido
