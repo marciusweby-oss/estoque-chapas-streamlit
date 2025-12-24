@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 import streamlit as st
 import pandas as pd
 import firebase_admin
@@ -31,7 +30,7 @@ def inicializar_firebase():
                 pk = pk + "\n-----END PRIVATE KEY-----\n"
             config["private_key"] = pk
             
-        app_name = "marcius-stock-v24"
+        app_name = "marcius-stock-v25"
         
         if not firebase_admin._apps:
             cred = credentials.Certificate(config)
@@ -49,7 +48,7 @@ def inicializar_firebase():
         return None, f"Erro de conexão: {str(e)}"
 
 db, erro_conexao = inicializar_firebase()
-PROJECT_ID = "marcius-stock-pro-v24"
+PROJECT_ID = "marcius-stock-pro-v25"
 
 # --- 2. GESTÃO DE DADOS ---
 
@@ -248,7 +247,7 @@ def main():
         if df.empty:
             st.info("💡 Catálogo vazio. Administrador: carregue a Base Mestra.")
         else:
-            # Filtros Expandidos conforme solicitado
+            # Filtros Expandidos
             st.sidebar.markdown("### 🔍 Filtros Detalhados")
             f_mat = st.sidebar.multiselect("Material", sorted(df["Material"].unique()))
             f_obra = st.sidebar.multiselect("Obra", sorted(df["Obra"].unique()))
@@ -274,6 +273,25 @@ def main():
             c2.metric("Total KG", f"{df_v['Saldo_KG'].sum():,.2f}")
             c3.metric("LVMs Ativas", len(df_v["LVM"].unique()))
             
+            st.divider()
+            
+            # --- SEÇÃO DE GRÁFICOS ---
+            g_col1, g_col2 = st.columns(2)
+            with g_col1:
+                # Gráfico de Peças por Obra
+                df_pie = df_v.groupby("Obra")["Saldo_Pecas"].sum().reset_index().nlargest(10, "Saldo_Pecas")
+                fig_pie = px.pie(df_pie, values="Saldo_Pecas", names="Obra", title="Top 10 Obras (Peças)", hole=0.3)
+                st.plotly_chart(fig_pie, use_container_width=True)
+            
+            with g_col2:
+                # Gráfico de Peso por Grau de Aço
+                df_bar = df_v.groupby("Grau")["Saldo_KG"].sum().reset_index()
+                fig_bar = px.bar(df_bar, x="Grau", y="Saldo_KG", title="Peso por Grau de Aço", color="Grau", 
+                                 labels={'Saldo_KG': 'Peso Total (KG)', 'Grau': 'Grau Material'})
+                st.plotly_chart(fig_bar, use_container_width=True)
+            
+            st.divider()
+
             if st.button("📥 Gerar Mapa de Stock (PDF)"):
                 pdf_data = gerar_pdf(df_v)
                 st.download_button("💾 Baixar PDF", pdf_data, f"stock_{datetime.now().strftime('%d%m%Y')}.pdf", "application/pdf")
