@@ -222,6 +222,7 @@ def main():
             st.info("💡 Carregue a Base Mestra.")
         else:
             st.sidebar.markdown("### 🔍 Filtros Técnicos")
+            f_mat = st.sidebar.multiselect("Material", sorted(df["Material"].unique()))
             f_obra = st.sidebar.multiselect("Obra", sorted(df["Obra"].unique()))
             f_pep = st.sidebar.multiselect("Elemento PEP", sorted(df["ElementoPEP"].unique()))
             f_grau = st.sidebar.multiselect("Grau do Aço", sorted(df["Grau"].unique()))
@@ -231,6 +232,7 @@ def main():
             f_lvm = st.sidebar.text_input("Busca LVM").upper().strip()
 
             df_v = df.copy()
+            if f_mat: df_v = df_v[df_v["Material"].isin(f_mat)]
             if f_obra: df_v = df_v[df_v["Obra"].isin(f_obra)]
             if f_pep: df_v = df_v[df_v["ElementoPEP"].isin(f_pep)]
             if f_grau: df_v = df_v[df_v["Grau"].isin(f_grau)]
