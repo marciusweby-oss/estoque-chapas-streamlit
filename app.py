@@ -17,16 +17,26 @@ def inicializar_firebase():
     try:
         # Verifica se a seção [firebase] existe no arquivo secrets.toml
         if "firebase" not in st.secrets:
-            return None, "ERRO CRÍTICO: Seção [firebase] não encontrada. Verifique se o arquivo secrets.toml começa com [firebase] em uma linha separada e não use chavetas { } no arquivo."
+            return None, "ERRO CRÍTICO: Seção [firebase] não encontrada no secrets.toml."
         
         config = dict(st.secrets["firebase"])
         
-        # CORREÇÃO PARA O ERRO DE PADDING/PEM:
-        # Garante que as quebras de linha '\n' sejam interpretadas corretamente pelo Firebase
+        # CORREÇÃO DEFINITIVA PARA O ERRO DE PADDING/PEM:
         if "private_key" in config:
-            config["private_key"] = config["private_key"].replace("\\n", "\n")
+            pk = config["private_key"]
+            # 1. Converte a string literal '\n' em quebras de linha reais
+            pk = pk.replace("\\n", "\n")
+            # 2. Remove possíveis aspas duplas ou simples extras no início/fim
+            pk = pk.strip().strip('"').strip("'")
+            # 3. Garante que o cabeçalho e rodapé do PEM existam (se o usuário esqueceu)
+            if "-----BEGIN PRIVATE KEY-----" not in pk:
+                pk = "-----BEGIN PRIVATE KEY-----\n" + pk
+            if "-----END PRIVATE KEY-----" not in pk:
+                pk = pk + "\n-----END PRIVATE KEY-----\n"
             
-        app_name = "marcius-stock-v21"
+            config["private_key"] = pk
+            
+        app_name = "marcius-stock-v22"
         
         if not firebase_admin._apps:
             cred = credentials.Certificate(config)
@@ -41,18 +51,18 @@ def inicializar_firebase():
         app_inst = firebase_admin.get_app(app_name)
         return firestore.client(app=app_inst), None
     except Exception as e:
-        # Retorna o erro detalhado para o diagnóstico
         msg_erro = str(e)
-        if "Reached end of line" in msg_erro or "Key name found without value" in msg_erro:
-            return None, f"Erro de Sintaxe no secrets.toml: Remova as chavetas {{ }} e use o sinal de igual (=) em vez de dois pontos (:). Detalhes: {msg_erro}"
+        # Diagnóstico amigável para o usuário
+        if "Reached end of line" in msg_erro:
+            return None, f"Erro de Sintaxe: O secrets.toml está mal formatado (falta um '=' ou aspas)."
         if "InvalidPadding" in msg_erro or "PEM" in msg_erro:
-            return None, f"Erro de Formatação na Private Key: Verifique se a chave no secrets.toml está entre aspas e se os \\n foram mantidos corretamente. Erro: {msg_erro}"
-        return None, f"Erro de parsing ou conexão: {msg_erro}"
+            return None, f"Erro de Chave Privada: A chave no secrets.toml está corrompida. Tente gerar um novo arquivo JSON no Firebase Console."
+        return None, f"Erro de conexão: {msg_erro}"
 
 # Inicialização global do banco de dados
 db, erro_conexao = inicializar_firebase()
 # Chave do projeto para isolamento no Firestore
-APP_ID = "marcius-stock-pro-v21"
+APP_ID = "marcius-stock-pro-v22"
 
 # --- 2. GESTÃO DE DADOS (FIRESTORE) ---
 
@@ -203,7 +213,7 @@ def main():
     # Diagnóstico de Conexão
     if db is None:
         st.error("🔴 FIREBASE DESCONECTADO")
-        st.info("O arquivo .streamlit/secrets.toml contém um erro de sintaxe.")
+        st.info("A ligação falhou. Verifique se os dados no secrets.toml estão corretos.")
         st.code(erro_conexao)
         return
 
