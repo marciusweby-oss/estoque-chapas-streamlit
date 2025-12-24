@@ -203,7 +203,8 @@ def main():
                 else: st.error("Incorreto.")
         return
 
-    opcoes = ["📊 Dashboard", "🔄 Movimentações"]
+    # Navegação com opção de Minha Conta para todos
+    opcoes = ["📊 Dashboard", "🔄 Movimentações", "👤 Minha Conta"]
     if st.session_state.user['nivel'] == "Admin":
         opcoes += ["📂 Base Mestra", "👥 Gestão de Acessos"]
     
@@ -213,7 +214,7 @@ def main():
         st.session_state.logado = False
         st.rerun()
 
-    # --- TELA: DASHBOARD (TODOS OS FILTROS) ---
+    # --- TELA: DASHBOARD ---
     if menu == "📊 Dashboard":
         st.title("📊 Controle de Stock")
         df = calcular_estoque_atual()
@@ -296,19 +297,50 @@ def main():
                     coll.add(d)
                 st.success("Concluído!"); st.rerun()
 
+    # --- TELA: MINHA CONTA (NOVO: ALTERAR PRÓPRIA SENHA) ---
+    elif menu == "👤 Minha Conta":
+        st.title("👤 Minha Conta")
+        st.subheader("Alterar Palavra-passe")
+        with st.form("f_perfil"):
+            senha_atual = st.text_input("Senha Atual", type="password")
+            nova_senha = st.text_input("Nova Senha", type="password")
+            confirmar = st.text_input("Confirmar Nova Senha", type="password")
+            
+            if st.form_submit_button("Atualizar Perfil", use_container_width=True):
+                # Validar senha atual
+                if senha_atual != st.session_state.user['password']:
+                    st.error("A senha atual está incorreta.")
+                elif nova_senha != confirmar:
+                    st.error("As novas senhas não coincidem.")
+                elif len(nova_senha) < 4:
+                    st.error("A nova senha deve ter pelo menos 4 caracteres.")
+                else:
+                    # Atualizar no Firestore
+                    user_ref = get_coll("users").where("username", "==", st.session_state.user['username']).stream()
+                    for doc in user_ref:
+                        doc.reference.update({"password": nova_senha})
+                    
+                    # Atualizar sessão local
+                    st.session_state.user['password'] = nova_senha
+                    st.success("Sua senha foi atualizada com sucesso!")
+                    time.sleep(1)
+                    st.rerun()
+
     # --- TELA: GESTÃO DE ACESSOS ---
     elif menu == "👥 Gestão de Acessos":
         st.title("👥 Utilizadores")
         with st.form("f_u"):
             nu = st.text_input("Novo User").lower().strip()
-            np = st.text_input("Senha", type="password")
+            np = st.text_input("Senha Inicial", type="password")
             nv = st.selectbox("Nível", ["Operador", "Admin"])
             if st.form_submit_button("Criar"):
                 if nu and np:
                     get_coll("users").add({"username": nu, "password": np, "nivel": nv})
-                    st.success("Ok!"); st.rerun()
+                    st.success(f"Utilizador '{nu}' criado com sucesso!"); time.sleep(1); st.rerun()
+                else: st.error("Preencha todos os campos.")
         
         st.divider()
+        st.subheader("Lista de Utilizadores")
         for n, d in utilizadores.items():
             c1, c2 = st.columns([4, 1])
             c1.write(f"🏷️ **{n}** | {d['nivel']}")
