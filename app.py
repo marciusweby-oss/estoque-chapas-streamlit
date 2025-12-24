@@ -16,7 +16,7 @@ def inicializar_firebase():
     """Inicializa a ligação ao Firebase usando as Secrets do Streamlit."""
     try:
         if "firebase" not in st.secrets:
-            return None, "Aba 'Secrets' não configurada no Streamlit Cloud."
+            return None, "Aba 'Secrets' não configurada no Streamlit Cloud. O Administrador precisa configurar as chaves do banco de dados."
         
         config = dict(st.secrets["firebase"])
         app_id = "marcius-stock-v14-final"
@@ -34,7 +34,7 @@ def inicializar_firebase():
         app_inst = firebase_admin.get_app(app_id)
         return firestore.client(app=app_inst), None
     except Exception as e:
-        return None, str(e)
+        return None, f"Erro de conexão: {str(e)}"
 
 db, erro_conexao = inicializar_firebase()
 APP_ID = "marcius-stock-pro-v14"
@@ -78,6 +78,7 @@ def carregar_utilizadores():
         docs = coll.stream()
         users = {d.to_dict()["username"]: d.to_dict() for d in docs}
         if not users:
+            # Login mestre padrão para o Marcius
             admin_data = {"username": "marcius.arruda", "password": "MwsArruda", "nivel": "Admin"}
             coll.add(admin_data)
             return {"marcius.arruda": admin_data}
@@ -90,17 +91,14 @@ def calcular_estoque_atual():
     base = carregar_catalogo_nuvem()
     if base.empty: return pd.DataFrame()
     
-    # Chaves de identificação e atributos técnicos
     chaves = ["LVM", "Material", "Obra", "ElementoPEP"]
     atributos = ["Grau", "Esp", "Larg", "Comp"]
     cols_tec = chaves + atributos
     
-    # Limpeza profunda
     for c in cols_tec:
         if c in base.columns: 
             base[c] = base[c].astype(str).str.strip().str.upper()
 
-    # Agrupa Inventário de Abertura
     inv = base.groupby(cols_tec).agg({
         "DescritivoMaterial": "first", "Peso": "first", "Material": "count"
     }).rename(columns={"Material": "Pecas_Iniciais"}).reset_index()
@@ -175,6 +173,14 @@ def gerar_pdf_estoque(df):
 def main():
     st.set_page_config(page_title="Marcius Stock Pro", layout="wide", page_icon="🏗️")
 
+    # CSS para melhorar o visual no telemóvel
+    st.markdown("""
+        <style>
+            .stButton>button { width: 100%; border-radius: 8px; height: 3em; font-weight: bold; }
+            .stTextInput>div>div>input { height: 3em; }
+        </style>
+    """, unsafe_allow_html=True)
+
     with st.sidebar:
         if os.path.exists("logo_empresa.png"):
             st.image("logo_empresa.png", use_container_width=True)
@@ -183,34 +189,39 @@ def main():
         st.divider()
 
     if db is None:
-        st.error("🔴 FIREBASE DESCONECTADO")
+        st.error("🔴 PROBLEMA DE LIGAÇÃO")
+        st.warning(erro_conexao)
         return
 
     utilizadores = carregar_utilizadores()
     if "logado" not in st.session_state: st.session_state.logado = False
     
     if not st.session_state.logado:
-        st.markdown("<h1 style='text-align: center;'>🔐 Login</h1>", unsafe_allow_html=True)
-        c1, c2, c3 = st.columns([1, 2, 1])
+        st.markdown("<h1 style='text-align: center;'>🏗️ Gestão Marcius Stock</h1>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align: center;'>Faça login para aceder ao sistema</p>", unsafe_allow_html=True)
+        
+        c1, c2, c3 = st.columns([1, 4, 1]) if st.sidebar.checkbox("Modo Mobile", value=True) else st.columns([1, 2, 1])
+        
         with c2:
             u = st.text_input("Utilizador").lower().strip()
             p = st.text_input("Senha", type="password")
-            if st.button("Entrar", use_container_width=True):
+            if st.button("ENTRAR"):
                 if u in utilizadores and utilizadores[u]["password"] == p:
                     st.session_state.logado = True
                     st.session_state.user = utilizadores[u]
                     st.rerun()
-                else: st.error("Incorreto.")
+                else: 
+                    st.error("Credenciais inválidas. Verifique o nome de utilizador e a senha.")
         return
 
-    # Navegação com opção de Minha Conta para todos
+    # Navegação
     opcoes = ["📊 Dashboard", "🔄 Movimentações", "👤 Minha Conta"]
     if st.session_state.user['nivel'] == "Admin":
         opcoes += ["📂 Base Mestra", "👥 Gestão de Acessos"]
     
-    menu = st.sidebar.radio("Navegação", opcoes)
+    menu = st.sidebar.radio("Navegação Principal", opcoes)
     
-    if st.sidebar.button("Terminar Sessão", use_container_width=True):
+    if st.sidebar.button("Terminar Sessão"):
         st.session_state.logado = False
         st.rerun()
 
@@ -220,9 +231,9 @@ def main():
         df = calcular_estoque_atual()
         
         if df.empty:
-            st.info("💡 Carregue a Base Mestra.")
+            st.info("💡 Catálogo vazio. Administrador: carregue a Base Mestra para começar.")
         else:
-            st.sidebar.markdown("### 🔍 Filtros Técnicos")
+            st.sidebar.markdown("### 🔍 Filtros")
             f_mat = st.sidebar.multiselect("Material", sorted(df["Material"].unique()))
             f_obra = st.sidebar.multiselect("Obra", sorted(df["Obra"].unique()))
             f_pep = st.sidebar.multiselect("Elemento PEP", sorted(df["ElementoPEP"].unique()))
@@ -248,16 +259,16 @@ def main():
             k3.metric("LVMs", len(df_v["LVM"].unique()))
 
             st.divider()
-            if st.button("📥 Exportar Dashboard para PDF", use_container_width=True):
+            if st.button("📥 Exportar Dashboard para PDF"):
                 pdf_bytes = gerar_pdf_estoque(df_v)
-                st.download_button("💾 Baixar PDF", pdf_bytes, f"stock_{datetime.now().strftime('%d%m%Y')}.pdf", "application/pdf", use_container_width=True)
+                st.download_button("💾 Baixar PDF", pdf_bytes, f"stock_{datetime.now().strftime('%d%m%Y')}.pdf", "application/pdf")
 
             g1, g2 = st.columns(2)
             with g1:
-                fig1 = px.pie(df_v.groupby("Obra")["Saldo_Pecas"].sum().reset_index().nlargest(10, "Saldo_Pecas"), values="Saldo_Pecas", names="Obra", title="Pcs por Obra", hole=0.3)
+                fig1 = px.pie(df_v.groupby("Obra")["Saldo_Pecas"].sum().reset_index().nlargest(10, "Saldo_Pecas"), values="Saldo_Pecas", names="Obra", title="Top 10 Obras", hole=0.3)
                 st.plotly_chart(fig1, use_container_width=True)
             with g2:
-                fig2 = px.bar(df_v.groupby("Grau")["Saldo_KG"].sum().reset_index(), x="Grau", y="Saldo_KG", title="KG por Grau", color="Grau")
+                fig2 = px.bar(df_v.groupby("Grau")["Saldo_KG"].sum().reset_index(), x="Grau", y="Saldo_KG", title="Peso por Grau", color="Grau")
                 st.plotly_chart(fig2, use_container_width=True)
 
             st.dataframe(df_v, use_container_width=True, hide_index=True)
@@ -266,7 +277,7 @@ def main():
     elif menu == "🔄 Movimentações":
         st.title("🔄 Movimentações")
         base = carregar_catalogo_nuvem()
-        if base.empty: st.error("Carregue a base primeiro."); return
+        if base.empty: st.error("A Base Mestra não está carregada."); return
         
         tab1, tab2 = st.tabs(["📝 Individual", "📁 Lote (Excel)"])
         with tab1:
@@ -277,27 +288,30 @@ def main():
                 qtd = st.number_input("Qtd", min_value=1, step=1)
                 o = st.text_input("Obra").upper().strip()
                 p = st.text_input("PEP").upper().strip()
-                if st.form_submit_button("Gravar", use_container_width=True):
+                if st.form_submit_button("GRAVAR REGISTO"):
                     coll = get_coll("movements")
                     dt = datetime.now().strftime("%d/%m/%Y")
                     coll.add({"Tipo": tp, "Material": mat, "LVM": lvm, "Qtde": qtd, "Obra": o, "ElementoPEP": p, "Data": dt, "timestamp": firestore.SERVER_TIMESTAMP})
-                    st.success("Salvo!"); time.sleep(1); st.rerun()
+                    st.success("Registo efetuado com sucesso!")
+                    time.sleep(1)
+                    st.rerun()
         
         with tab2:
             st.subheader("📁 Upload Excel")
-            tipo_up = st.selectbox("Tipo do Arquivo", ["SAIDA", "ENTRADA", "TMA", "TDMA"])
-            st.info("Colunas: Material, LVM, Qtde, Obra, ElementoPEP, Data")
-            up = st.file_uploader(f"Excel de {tipo_up}", type="xlsx")
-            if up and st.button("🚀 Processar", use_container_width=True):
+            tipo_up = st.selectbox("Tipo de Movimento no Arquivo", ["SAIDA", "ENTRADA", "TMA", "TDMA"])
+            st.info("O Excel deve conter: Material, LVM, Qtde, Obra, ElementoPEP, Data")
+            up = st.file_uploader(f"Ficheiro de {tipo_up}", type="xlsx")
+            if up and st.button("PROCESSAR FICHEIRO"):
                 df_up = pd.read_excel(up, dtype=str)
                 coll = get_coll("movements")
                 ts = firestore.SERVER_TIMESTAMP
                 for _, r in df_up.iterrows():
                     d = r.to_dict(); d["Tipo"] = tipo_up; d["timestamp"] = ts
                     coll.add(d)
-                st.success("Concluído!"); st.rerun()
+                st.success("Importação concluída!")
+                st.rerun()
 
-    # --- TELA: MINHA CONTA (NOVO: ALTERAR PRÓPRIA SENHA) ---
+    # --- TELA: MINHA CONTA ---
     elif menu == "👤 Minha Conta":
         st.title("👤 Minha Conta")
         st.subheader("Alterar Palavra-passe")
@@ -306,8 +320,7 @@ def main():
             nova_senha = st.text_input("Nova Senha", type="password")
             confirmar = st.text_input("Confirmar Nova Senha", type="password")
             
-            if st.form_submit_button("Atualizar Perfil", use_container_width=True):
-                # Validar senha atual
+            if st.form_submit_button("ATUALIZAR SENHA"):
                 if senha_atual != st.session_state.user['password']:
                     st.error("A senha atual está incorreta.")
                 elif nova_senha != confirmar:
@@ -315,45 +328,46 @@ def main():
                 elif len(nova_senha) < 4:
                     st.error("A nova senha deve ter pelo menos 4 caracteres.")
                 else:
-                    # Atualizar no Firestore
                     user_ref = get_coll("users").where("username", "==", st.session_state.user['username']).stream()
                     for doc in user_ref:
                         doc.reference.update({"password": nova_senha})
-                    
-                    # Atualizar sessão local
                     st.session_state.user['password'] = nova_senha
-                    st.success("Sua senha foi atualizada com sucesso!")
+                    st.success("Palavra-passe atualizada com sucesso!")
                     time.sleep(1)
                     st.rerun()
 
     # --- TELA: GESTÃO DE ACESSOS ---
     elif menu == "👥 Gestão de Acessos":
-        st.title("👥 Utilizadores")
+        st.title("👥 Gestão de Utilizadores")
         with st.form("f_u"):
-            nu = st.text_input("Novo User").lower().strip()
-            np = st.text_input("Senha Inicial", type="password")
-            nv = st.selectbox("Nível", ["Operador", "Admin"])
-            if st.form_submit_button("Criar"):
+            nu = st.text_input("Nome de Utilizador").lower().strip()
+            np = st.text_input("Senha Provisória", type="password")
+            nv = st.selectbox("Nível de Permissão", ["Operador", "Admin"])
+            if st.form_submit_button("CRIAR UTILIZADOR"):
                 if nu and np:
                     get_coll("users").add({"username": nu, "password": np, "nivel": nv})
-                    st.success(f"Utilizador '{nu}' criado com sucesso!"); time.sleep(1); st.rerun()
+                    st.success(f"Utilizador '{nu}' criado! Peça ao colega para entrar e mudar a senha em 'Minha Conta'.")
+                    time.sleep(1)
+                    st.rerun()
                 else: st.error("Preencha todos os campos.")
         
         st.divider()
-        st.subheader("Lista de Utilizadores")
+        st.subheader("Lista de Utilizadores Ativos")
         for n, d in utilizadores.items():
             c1, c2 = st.columns([4, 1])
-            c1.write(f"🏷️ **{n}** | {d['nivel']}")
-            if n != "marcius.arruda" and c2.button("Remover", key=f"d_{n}"):
-                docs = get_coll("users").where("username", "==", n).stream()
-                for doc in docs: doc.reference.delete()
-                st.rerun()
+            c1.write(f"🏷️ **{n}** | Permissão: {d['nivel']}")
+            if n != "marcius.arruda":
+                if c2.button("Eliminar", key=f"d_{n}"):
+                    docs = get_coll("users").where("username", "==", n).stream()
+                    for doc in docs: doc.reference.delete()
+                    st.rerun()
 
     # --- TELA: BASE MESTRA ---
     elif menu == "📂 Base Mestra":
-        st.title("📂 Catálogo")
-        f = st.file_uploader("Excel Mestre", type="xlsx")
-        if f and st.button("🚀 Sincronizar", use_container_width=True):
+        st.title("📂 Gestão da Base Mestra")
+        st.warning("Atenção: Carregar uma nova base substituirá a anterior na nuvem.")
+        f = st.file_uploader("Ficheiro Excel Principal", type="xlsx")
+        if f and st.button("🚀 SINCRONIZAR COM A NUVEM"):
             df_m = pd.read_excel(f, dtype=str)
             coll = get_coll("master_csv_store")
             for d in coll.stream(): d.reference.delete()
@@ -363,7 +377,7 @@ def main():
             for i, p in enumerate(parts):
                 coll.document(f"p_{i}").set({"part": i, "csv_data": p})
             st.cache_data.clear()
-            st.success("Sincronizado!")
+            st.success("Catálogo sincronizado com sucesso!")
 
 if __name__ == "__main__":
     main()
