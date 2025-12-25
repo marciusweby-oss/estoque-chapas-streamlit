@@ -31,7 +31,7 @@ def inicializar_firebase():
                 pk = pk + "\n-----END PRIVATE KEY-----\n"
             config["private_key"] = pk
             
-        app_name = "marcius-stock-v27"
+        app_name = "marcius-stock-v28"
         
         if not firebase_admin._apps:
             cred = credentials.Certificate(config)
@@ -49,7 +49,7 @@ def inicializar_firebase():
         return None, f"Erro de conexão: {str(e)}"
 
 db, erro_conexao = inicializar_firebase()
-PROJECT_ID = "marcius-stock-pro-v27"
+PROJECT_ID = "marcius-stock-pro-v28"
 
 # --- 2. GESTÃO DE DADOS ---
 
@@ -75,7 +75,7 @@ def carregar_base_mestra():
 
 def carregar_movimentos():
     coll = get_coll("movements")
-    if coll is None: return pd.DataFrame()
+    if col is None: return pd.DataFrame()
     try:
         docs = coll.stream()
         dados = [d.to_dict() for d in docs]
@@ -137,7 +137,7 @@ class StockPDF(FPDF):
         if os.path.exists("logo_empresa.png"):
             self.image("logo_empresa.png", 10, 8, 25)
         self.set_font("helvetica", "B", 14)
-        self.cell(0, 10, "MAPA DE STOCK - MARCIUS STOCK", ln=True, align="R")
+        self.cell(0, 10, "MAPA DE ESTOQUE - MARCIUS ESTOQUE", ln=True, align="R")
         self.set_font("helvetica", "I", 8)
         self.cell(0, 5, f"Data: {datetime.now().strftime('%d/%m/%Y %H:%M')}", ln=True, align="R")
         self.ln(10)
@@ -171,7 +171,7 @@ def gerar_pdf(df):
 # --- 5. INTERFACE ---
 
 def main():
-    st.set_page_config(page_title="Marcius Stock Pro", layout="wide", page_icon="🏗️")
+    st.set_page_config(page_title="Marcius Gestão de Estoque ", layout="wide", page_icon="🏗️")
 
     st.markdown("""
         <style>
@@ -204,7 +204,7 @@ def main():
     
     # --- TELA DE LOGIN ---
     if not st.session_state.logado:
-        st.markdown("<br><h1 style='text-align: center; color: #1e3a8a;'>🏗️ Sistema de Gestão de Stock</h1>", unsafe_allow_html=True)
+        st.markdown("<br><h1 style='text-align: center; color: #1e3a8a;'>🏗️ Sistema de Gestão de Estoque</h1>", unsafe_allow_html=True)
         st.markdown("<p style='text-align: center; color: #64748b;'>Introduza as suas credenciais para aceder ao inventário.</p>", unsafe_allow_html=True)
         
         col_a, col_b, col_c = st.columns([1, 4, 1])
@@ -213,7 +213,7 @@ def main():
             u_in = st.text_input("Nome de Utilizador").lower().strip()
             p_in = st.text_input("Senha", type="password").strip()
             
-            if st.button("ACEDER AO SISTEMA"):
+            if st.button("ENTRAR NO SISTEMA"):
                 if u_in in users and users[u_in]["password"] == p_in:
                     st.session_state.logado = True
                     st.session_state.user = users[u_in]
@@ -240,23 +240,30 @@ def main():
 
     # --- TELA: DASHBOARD ---
     if menu == "📊 Dashboard":
-        st.title("📊 Painel de Stock Real")
+        st.title("📊 Painel de Estoque Real")
         df = calcular_saldos()
         if df.empty:
             st.info("💡 Inventário vazio. O Administrador deve carregar a Base Mestra.")
         else:
-            st.sidebar.markdown("### 🔍 Filtros Rápidos")
+            # Filtros Expandidos (Todos os campos possíveis da base)
+            st.sidebar.markdown("### 🔍 Filtros Detalhados")
             f_mat = st.sidebar.multiselect("Código Material", sorted(df["Material"].unique()))
             f_obra = st.sidebar.multiselect("Obra", sorted(df["Obra"].unique()))
+            f_pep = st.sidebar.multiselect("Elemento PEP", sorted(df["ElementoPEP"].unique()))
             f_grau = st.sidebar.multiselect("Grau", sorted(df["Grau"].unique()))
             f_esp = st.sidebar.multiselect("Espessura", sorted(df["Esp"].unique()))
+            f_larg = st.sidebar.multiselect("Largura", sorted(df["Larg"].unique()))
+            f_comp = st.sidebar.multiselect("Comprimento", sorted(df["Comp"].unique()))
             f_lvm = st.sidebar.text_input("Pesquisar LVM").upper().strip()
 
             df_v = df.copy()
             if f_mat: df_v = df_v[df_v["Material"].isin(f_mat)]
             if f_obra: df_v = df_v[df_v["Obra"].isin(f_obra)]
+            if f_pep: df_v = df_v[df_v["ElementoPEP"].isin(f_pep)]
             if f_grau: df_v = df_v[df_v["Grau"].isin(f_grau)]
             if f_esp: df_v = df_v[df_v["Esp"].isin(f_esp)]
+            if f_larg: df_v = df_v[df_v["Larg"].isin(f_larg)]
+            if f_comp: df_v = df_v[df_v["Comp"].isin(f_comp)]
             if f_lvm: df_v = df_v[df_v["LVM"].str.contains(f_lvm)]
 
             c1, c2, c3 = st.columns(3)
@@ -283,7 +290,7 @@ def main():
 
     # --- TELA: MOVIMENTAÇÕES ---
     elif menu == "🔄 Movimentações":
-        st.title("🔄 Registo de Entradas/Saídas")
+        st.title("🔄 Registro de Entradas/Saídas")
         base = carregar_base_mestra()
         if base.empty: st.error("Carregue a base primeiro na aba 'Base Mestra'."); return
         
