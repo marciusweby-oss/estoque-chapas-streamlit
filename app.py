@@ -29,7 +29,7 @@ def inicializar_firebase():
                 pk = pk + "\n-----END PRIVATE KEY-----\n"
             config["private_key"] = pk
             
-        app_name = "marcius-estoque-v34"
+        app_name = "marcius-estoque-v35"
         
         if not firebase_admin._apps:
             cred = credentials.Certificate(config)
@@ -42,7 +42,7 @@ def inicializar_firebase():
 
 # Inicialização do DB
 db, erro_conexao = inicializar_firebase()
-PROJECT_ID = "marcius-estoque-pro-v34"
+PROJECT_ID = "marcius-estoque-pro-v35"
 
 # --- 2. GESTÃO DE DADOS ---
 
@@ -99,16 +99,28 @@ def calcular_saldos():
     for c in chaves + especs:
         if c in base.columns: base[c] = base[c].astype(str).str.strip().str.upper()
 
+    # Inventário Inicial
     inv = base.groupby(chaves + especs).agg({
         "DescritivoMaterial": "first", "Peso": "first", "Material": "count"
     }).rename(columns={"Material": "Qtd_Inicial"}).reset_index()
     
     movs = carregar_movimentos()
     if not movs.empty and "Tipo" in movs.columns:
+        # Normalização das chaves nos movimentos para o merge
         for c in chaves:
-            if c in movs.columns: movs[c] = movs[c].astype(str).str.strip().str.upper()
-        movs["Qtd_N"] = pd.to_numeric(movs["Qtde"], errors="coerce").fillna(0)
-        movs["Impacto"] = movs.apply(lambda x: x["Qtd_N"] if str(x["Tipo"]).upper() in ["ENTRADA", "TDMA"] else -x["Qtd_N"], axis=1)
+            if c in movs.columns:
+                movs[c] = movs[c].astype(str).str.strip().str.upper()
+        
+        # Garantir que a quantidade é numérica
+        if "Qtde" in movs.columns:
+            movs["Qtd_N"] = pd.to_numeric(movs["Qtde"], errors="coerce").fillna(0)
+        else:
+            movs["Qtd_N"] = 0
+            
+        # Lógica de Impacto (Entrada/TDMA somam, o resto subtrai)
+        # CORREÇÃO: Adicionado .strip() para evitar falhas com espaços invisíveis
+        movs["Impacto"] = movs.apply(lambda x: x["Qtd_N"] if str(x["Tipo"]).strip().upper() in ["ENTRADA", "TDMA"] else -x["Qtd_N"], axis=1)
+        
         resumo = movs.groupby(chaves)["Impacto"].sum().reset_index()
         inv = pd.merge(inv, resumo, on=chaves, how="left").fillna(0)
     else:
@@ -116,6 +128,8 @@ def calcular_saldos():
         
     inv["Saldo_Pecas"] = inv["Qtd_Inicial"] + inv["Impacto"]
     inv["Saldo_KG"] = inv["Saldo_Pecas"] * inv["Peso"]
+    
+    # Exibe apenas itens que têm saldo positivo
     return inv[inv["Saldo_Pecas"] > 0].sort_values(by=["Obra", "LVM"])
 
 # --- 4. RELATÓRIOS ---
@@ -198,10 +212,7 @@ def main():
             st.sidebar.markdown("### 🔍 Filtros")
             f_obra = st.sidebar.multiselect("Obra", sorted(df_base["Obra"].unique()))
             f_pep = st.sidebar.multiselect("Elemento PEP", sorted(df_base["ElementoPEP"].unique()))
-            
-            # FILTRO: Grau
             f_grau = st.sidebar.multiselect("Grau", sorted(df_base["Grau"].unique()))
-            
             f_esp = st.sidebar.multiselect("Espessura", sorted(df_base["Esp"].unique()))
             f_larg = st.sidebar.multiselect("Largura", sorted(df_base["Larg"].unique()))
             f_comp = st.sidebar.multiselect("Comprimento", sorted(df_base["Comp"].unique()))
@@ -229,7 +240,6 @@ def main():
             # Gráficos
             g1, g2 = st.columns(2)
             with g1:
-                # CORREÇÃO: Removido erro de aspas na linha abaixo
                 pie_data = df_v.groupby("Obra")["Saldo_Pecas"].sum().reset_index().nlargest(10, "Saldo_Pecas")
                 fig1 = px.pie(pie_data, values="Saldo_Pecas", names="Obra", title="Top 10 Obras (Peças)", hole=0.4)
                 st.plotly_chart(fig1, use_container_width=True)
@@ -249,9 +259,8 @@ def main():
     elif menu == "🔄 Movimentações":
         st.title("🔄 Registar Movimento")
         base = carregar_base_mestra()
-        if base.empty: st.warning("Carregue a Base Mestra primeiro."); return
+        if base.empty: st.error("Carregue a Base Mestra primeiro."); return
         
-        # ABAS: Individual e Lote
         tab_ind, tab_lote = st.tabs(["📝 Lançamento Individual", "📁 Importação em Lote (Excel)"])
         
         with tab_ind:
@@ -282,14 +291,22 @@ def main():
             
             if up_mov and st.button(f"🚀 Importar Registos de {tipo_up}"):
                 try:
+                    # Lemos o Excel e limpamos os nomes das colunas (removendo espaços)
                     df_up = pd.read_excel(up_mov, dtype=str)
+                    df_up.columns = [str(c).strip() for c in df_up.columns]
+                    
                     coll = get_coll("movements")
                     ts = firestore.SERVER_TIMESTAMP
-                    for _, r in df_up.iterrows():
-                        d = r.to_dict()
-                        d["Tipo"] = tipo_up
+                    
+                    progresso = st.progress(0)
+                    for i, r in df_up.iterrows():
+                        # Limpamos espaços também nos valores das células para evitar erros de merge
+                        d = {str(k).strip(): str(v).strip() for k, v in r.to_dict().items()}
+                        d["Tipo"] = tipo_up.strip().upper() # Garante que ENTRADA seja salvo limpo
                         d["timestamp"] = ts
                         coll.add(d)
+                        progresso.progress((i + 1) / len(df_up))
+                        
                     st.success(f"Importação de {len(df_up)} registros concluída!")
                     time.sleep(1)
                     st.rerun()
