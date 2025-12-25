@@ -29,7 +29,7 @@ def inicializar_firebase():
                 pk = pk + "\n-----END PRIVATE KEY-----\n"
             config["private_key"] = pk
             
-        app_name = "marcius-estoque-v35"
+        app_name = "marcius-estoque-v36"
         
         if not firebase_admin._apps:
             cred = credentials.Certificate(config)
@@ -42,7 +42,7 @@ def inicializar_firebase():
 
 # Inicialização do DB
 db, erro_conexao = inicializar_firebase()
-PROJECT_ID = "marcius-estoque-pro-v35"
+PROJECT_ID = "marcius-estoque-pro-v36"
 
 # --- 2. GESTÃO DE DADOS ---
 
@@ -60,6 +60,10 @@ def carregar_base_mestra():
         csv_raw = "".join([d.get("csv_data", "") for d in lista])
         if not csv_raw: return pd.DataFrame()
         df = pd.read_csv(io.StringIO(csv_raw), dtype=str)
+        # Padronização: se a base mestre vier com 'CodigodoMaterial', renomeamos para 'Material'
+        if 'CodigodoMaterial' in df.columns:
+            df.rename(columns={'CodigodoMaterial': 'Material'}, inplace=True)
+            
         for col in ["Peso", "Larg", "Comp", "Esp"]:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col].astype(str).str.replace(",", "."), errors="coerce").fillna(0)
@@ -71,7 +75,10 @@ def carregar_movimentos():
     if coll is None: return pd.DataFrame()
     try:
         docs = coll.stream()
-        return pd.DataFrame([d.to_dict() for d in docs])
+        df = pd.DataFrame([d.to_dict() for d in docs])
+        if not df.empty and 'CodigodoMaterial' in df.columns:
+            df.rename(columns={'CodigodoMaterial': 'Material'}, inplace=True)
+        return df
     except: return pd.DataFrame()
 
 def carregar_users():
@@ -93,43 +100,50 @@ def calcular_saldos():
     base = carregar_base_mestra()
     if base.empty: return pd.DataFrame()
     
+    # Chaves de união padronizadas
     chaves = ["LVM", "Material", "Obra", "ElementoPEP"]
     especs = ["Grau", "Esp", "Larg", "Comp"]
     
+    # Limpeza da Base Mestra
     for c in chaves + especs:
-        if c in base.columns: base[c] = base[c].astype(str).str.strip().str.upper()
+        if c in base.columns: 
+            base[c] = base[c].astype(str).str.strip().str.upper()
 
-    # Inventário Inicial
+    # Agrupamento do Inventário Inicial
     inv = base.groupby(chaves + especs).agg({
-        "DescritivoMaterial": "first", "Peso": "first", "Material": "count"
-    }).rename(columns={"Material": "Qtd_Inicial"}).reset_index()
+        "DescritivoMaterial": "first", "Peso": "first"
+    }).reset_index()
+    
+    # Conta quantos itens únicos existem no cadastro original para servir de "Estoque Inicial"
+    contagem_inicial = base.groupby(chaves).size().reset_index(name='Qtd_Inicial')
+    inv = pd.merge(inv, contagem_inicial, on=chaves, how="left")
     
     movs = carregar_movimentos()
-    if not movs.empty and "Tipo" in movs.columns:
-        # Normalização das chaves nos movimentos para o merge
+    if not movs.empty:
+        # Normalização dos movimentos
         for c in chaves:
             if c in movs.columns:
                 movs[c] = movs[c].astype(str).str.strip().str.upper()
         
-        # Garantir que a quantidade é numérica
         if "Qtde" in movs.columns:
             movs["Qtd_N"] = pd.to_numeric(movs["Qtde"], errors="coerce").fillna(0)
-        else:
-            movs["Qtd_N"] = 0
             
-        # Lógica de Impacto (Entrada/TDMA somam, o resto subtrai)
-        # CORREÇÃO: Adicionado .strip() para evitar falhas com espaços invisíveis
-        movs["Impacto"] = movs.apply(lambda x: x["Qtd_N"] if str(x["Tipo"]).strip().upper() in ["ENTRADA", "TDMA"] else -x["Qtd_N"], axis=1)
-        
-        resumo = movs.groupby(chaves)["Impacto"].sum().reset_index()
-        inv = pd.merge(inv, resumo, on=chaves, how="left").fillna(0)
+            # Lógica de Impacto: ENTRADA e TDMA somam. SAIDA e TMA subtraem.
+            movs["Impacto"] = movs.apply(
+                lambda x: x["Qtd_N"] if str(x.get("Tipo", "")).strip().upper() in ["ENTRADA", "TDMA"] 
+                else -x["Qtd_N"], axis=1
+            )
+            
+            resumo = movs.groupby(chaves)["Impacto"].sum().reset_index()
+            inv = pd.merge(inv, resumo, on=chaves, how="left").fillna(0)
+        else:
+            inv["Impacto"] = 0
     else:
         inv["Impacto"] = 0
         
     inv["Saldo_Pecas"] = inv["Qtd_Inicial"] + inv["Impacto"]
-    inv["Saldo_KG"] = inv["Saldo_Pecas"] * inv["Peso"]
+    inv["Saldo_KG"] = inv["Saldo_Pecas"] * pd.to_numeric(inv["Peso"], errors='coerce').fillna(0)
     
-    # Exibe apenas itens que têm saldo positivo
     return inv[inv["Saldo_Pecas"] > 0].sort_values(by=["Obra", "LVM"])
 
 # --- 4. RELATÓRIOS ---
@@ -206,7 +220,7 @@ def main():
         df_base = calcular_saldos()
         
         if df_base.empty:
-            st.info("💡 Inventário vazio. Administrador: carregue a Base Mestra.")
+            st.info("💡 Inventário vazio ou sem saldo positivo.")
         else:
             # Filtros na Barra Lateral
             st.sidebar.markdown("### 🔍 Filtros")
@@ -261,7 +275,7 @@ def main():
         base = carregar_base_mestra()
         if base.empty: st.error("Carregue a Base Mestra primeiro."); return
         
-        tab_ind, tab_lote = st.tabs(["📝 Lançamento Individual", "📁 Importação em Lote (Excel)"])
+        tab_ind, tab_lote = st.tabs(["📝 Individual", "📁 Em Lote (Excel)"])
         
         with tab_ind:
             with st.form("f_mov"):
@@ -284,34 +298,39 @@ def main():
                     st.rerun()
 
         with tab_lote:
-            st.subheader("📁 Upload de Arquivos de Movimentação")
-            st.info("O Excel deve conter as colunas: Material, LVM, Qtde, Obra, ElementoPEP, Data")
-            tipo_up = st.selectbox("Tipo para este ficheiro", ["SAIDA", "ENTRADA", "TMA", "TDMA"])
-            up_mov = st.file_uploader(f"Selecione o ficheiro de {tipo_up}", type="xlsx")
+            st.subheader("📁 Upload de Movimentações em Lote")
+            tipo_up = st.selectbox("Tipo para este ficheiro", ["ENTRADA", "SAIDA", "TMA", "TDMA"])
+            up_mov = st.file_uploader(f"Selecione o Excel de {tipo_up}", type="xlsx")
             
-            if up_mov and st.button(f"🚀 Importar Registos de {tipo_up}"):
+            if up_mov and st.button(f"🚀 Importar Registos"):
                 try:
-                    # Lemos o Excel e limpamos os nomes das colunas (removendo espaços)
                     df_up = pd.read_excel(up_mov, dtype=str)
                     df_up.columns = [str(c).strip() for c in df_up.columns]
+                    
+                    # Padronização de nomes de coluna comuns
+                    rename_map = {
+                        'CodigodoMaterial': 'Material',
+                        'CodigoMaterial': 'Material',
+                        'Código': 'Material'
+                    }
+                    df_up.rename(columns=rename_map, inplace=True)
                     
                     coll = get_coll("movements")
                     ts = firestore.SERVER_TIMESTAMP
                     
                     progresso = st.progress(0)
                     for i, r in df_up.iterrows():
-                        # Limpamos espaços também nos valores das células para evitar erros de merge
-                        d = {str(k).strip(): str(v).strip() for k, v in r.to_dict().items()}
-                        d["Tipo"] = tipo_up.strip().upper() # Garante que ENTRADA seja salvo limpo
+                        d = {str(k).strip(): str(v).strip() for k, v in r.to_dict().items() if pd.notna(v)}
+                        d["Tipo"] = tipo_up.strip().upper()
                         d["timestamp"] = ts
                         coll.add(d)
                         progresso.progress((i + 1) / len(df_up))
                         
-                    st.success(f"Importação de {len(df_up)} registros concluída!")
+                    st.success("Importação concluída!")
                     time.sleep(1)
                     st.rerun()
                 except Exception as e:
-                    st.error(f"Erro ao processar o ficheiro: {e}")
+                    st.error(f"Erro: {e}")
 
     # --- PÁGINA: EQUIPA ---
     elif menu == "👥 Gestão de Acessos":
@@ -323,10 +342,9 @@ def main():
             if st.form_submit_button("CRIAR UTILIZADOR"):
                 if new_u and new_p:
                     get_coll("users").add({"username": new_u, "password": new_p, "nivel": new_n})
-                    st.success(f"Utilizador {new_u} criado!")
+                    st.success("Conta criada!")
                     st.rerun()
         st.divider()
-        st.subheader("Utilizadores Ativos")
         for u_name, u_data in users.items():
             st.write(f"• **{u_name}** ({u_data['nivel']})")
 
@@ -334,7 +352,7 @@ def main():
     elif menu == "📂 Base Mestra":
         st.title("📂 Sincronizar Catálogo")
         f = st.file_uploader("Ficheiro Excel da Base Mestra", type="xlsx")
-        if f and st.button("🚀 ENVIAR PARA A NUVEM"):
+        if f and st.button("🚀 SINCRONIZAR"):
             df_m = pd.read_excel(f, dtype=str)
             coll = get_coll("master_csv_store")
             for d in coll.stream(): d.reference.delete()
