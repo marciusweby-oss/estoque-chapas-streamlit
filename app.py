@@ -31,7 +31,7 @@ def inicializar_firebase():
                 pk = pk + "\n-----END PRIVATE KEY-----\n"
             config["private_key"] = pk
             
-        app_name = "marcius-stock-v28"
+        app_name = "marcius-estoque-v28"
         
         if not firebase_admin._apps:
             cred = credentials.Certificate(config)
@@ -49,7 +49,7 @@ def inicializar_firebase():
         return None, f"Erro de conexão: {str(e)}"
 
 db, erro_conexao = inicializar_firebase()
-PROJECT_ID = "marcius-stock-pro-v28"
+PROJECT_ID = "marcius-estoque-pro-v28"
 
 # --- 2. GESTÃO DE DADOS ---
 
@@ -75,7 +75,7 @@ def carregar_base_mestra():
 
 def carregar_movimentos():
     coll = get_coll("movements")
-    if col is None: return pd.DataFrame()
+    if coll is None: return pd.DataFrame()
     try:
         docs = coll.stream()
         dados = [d.to_dict() for d in docs]
@@ -132,7 +132,7 @@ def calcular_saldos():
 
 # --- 4. EXPORTAÇÃO PDF ---
 
-class StockPDF(FPDF):
+class EstoquePDF(FPDF):
     def header(self):
         if os.path.exists("logo_empresa.png"):
             self.image("logo_empresa.png", 10, 8, 25)
@@ -143,7 +143,7 @@ class StockPDF(FPDF):
         self.ln(10)
 
 def gerar_pdf(df):
-    pdf = StockPDF()
+    pdf = EstoquePDF()
     pdf.alias_nb_pages()
     pdf.add_page()
     pdf.set_font("helvetica", "B", 7)
@@ -171,7 +171,7 @@ def gerar_pdf(df):
 # --- 5. INTERFACE ---
 
 def main():
-    st.set_page_config(page_title="Marcius Gestão de Estoque ", layout="wide", page_icon="🏗️")
+    st.set_page_config(page_title="Marcius Gestão de Estoque", layout="wide", page_icon="🏗️")
 
     st.markdown("""
         <style>
@@ -186,7 +186,7 @@ def main():
         if os.path.exists("logo_empresa.png"):
             st.image("logo_empresa.png", use_container_width=True)
         else:
-            st.markdown("<h2 style='text-align: center; color: #FF4B4B;'>🏗️ STOCK PRO</h2>", unsafe_allow_html=True)
+            st.markdown("<h2 style='text-align: center; color: #FF4B4B;'>🏗️ ESTOQUE PRO</h2>", unsafe_allow_html=True)
         
         if db is not None:
             st.markdown("<div style='color: green; font-size: 0.85em; text-align: center;'>● Ligação Ativa</div>", unsafe_allow_html=True)
@@ -275,7 +275,7 @@ def main():
             
             col_g1, col_g2 = st.columns(2)
             with col_g1:
-                fig1 = px.pie(df_v.groupby("Obra")["Saldo_Pecas"].sum().reset_index().nlargest(10, "Saldo_Pecas"), values="Saldo_Pecas", names="Obra", title="Stock por Obra (Top 10)", hole=0.4)
+                fig1 = px.pie(df_v.groupby("Obra")["Saldo_Pecas"].sum().reset_index().nlargest(10, "Saldo_Pecas"), values="Saldo_Pecas", names="Obra", title="Estoque por Obra (Top 10)", hole=0.4)
                 st.plotly_chart(fig1, use_container_width=True)
             with col_g2:
                 fig2 = px.bar(df_v.groupby("Grau")["Saldo_KG"].sum().reset_index(), x="Grau", y="Saldo_KG", title="Peso por Grau de Material", color="Grau")
@@ -284,13 +284,13 @@ def main():
             st.divider()
             if st.button("📥 Gerar Relatório PDF"):
                 pdf_data = gerar_pdf(df_v)
-                st.download_button("💾 Clique para Baixar PDF", pdf_data, f"stock_{datetime.now().strftime('%d%m%Y')}.pdf", "application/pdf")
+                st.download_button("💾 Clique para Baixar PDF", pdf_data, f"estoque_{datetime.now().strftime('%d%m%Y')}.pdf", "application/pdf")
             
             st.dataframe(df_v, use_container_width=True, hide_index=True)
 
     # --- TELA: MOVIMENTAÇÕES ---
     elif menu == "🔄 Movimentações":
-        st.title("🔄 Registro de Entradas/Saídas")
+        st.title("🔄 Registo de Entradas/Saídas")
         base = carregar_base_mestra()
         if base.empty: st.error("Carregue a base primeiro na aba 'Base Mestra'."); return
         
