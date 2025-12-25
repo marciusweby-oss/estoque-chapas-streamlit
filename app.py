@@ -29,7 +29,7 @@ def inicializar_firebase():
                 pk = pk + "\n-----END PRIVATE KEY-----\n"
             config["private_key"] = pk
             
-        app_name = "marcius-estoque-v33"
+        app_name = "marcius-estoque-v34"
         
         if not firebase_admin._apps:
             cred = credentials.Certificate(config)
@@ -42,7 +42,7 @@ def inicializar_firebase():
 
 # Inicialização do DB
 db, erro_conexao = inicializar_firebase()
-PROJECT_ID = "marcius-estoque-pro-v33"
+PROJECT_ID = "marcius-estoque-pro-v34"
 
 # --- 2. GESTÃO DE DADOS ---
 
@@ -198,10 +198,11 @@ def main():
             st.sidebar.markdown("### 🔍 Filtros")
             f_obra = st.sidebar.multiselect("Obra", sorted(df_base["Obra"].unique()))
             f_pep = st.sidebar.multiselect("Elemento PEP", sorted(df_base["ElementoPEP"].unique()))
-            f_grau = st.sidebar.multiselect("Grau", sorted(df_base["Grau"].unique()))
-            f_esp = st.sidebar.multiselect("Espessura", sorted(df_base["Esp"].unique()))
             
-            # NOVOS FILTROS: Largura e Comprimento
+            # FILTRO: Grau (Garantindo que o termo seja Grau)
+            f_grau = st.sidebar.multiselect("Grau", sorted(df_base["Grau"].unique()))
+            
+            f_esp = st.sidebar.multiselect("Espessura", sorted(df_base["Esp"].unique()))
             f_larg = st.sidebar.multiselect("Largura", sorted(df_base["Larg"].unique()))
             f_comp = st.sidebar.multiselect("Comprimento", sorted(df_base["Comp"].unique()))
             
@@ -228,7 +229,7 @@ def main():
             # Gráficos
             g1, g2 = st.columns(2)
             with g1:
-                pie_data = df_v.groupby("Obra")["Saldo_Pecas"].sum().reset_index().nlargest(10, "Saldo_Pecas")
+                pie_data = df_v.groupby("Obra")["Saldo_Pecas'].sum().reset_index().nlargest(10, "Saldo_Pecas")
                 fig1 = px.pie(pie_data, values="Saldo_Pecas", names="Obra", title="Top 10 Obras (Peças)", hole=0.4)
                 st.plotly_chart(fig1, use_container_width=True)
             with g2:
@@ -249,24 +250,50 @@ def main():
         base = carregar_base_mestra()
         if base.empty: st.warning("Carregue a Base Mestra primeiro."); return
         
-        with st.form("f_mov"):
-            col1, col2 = st.columns(2)
-            tipo = col1.selectbox("Operação", ["SAIDA", "ENTRADA", "TMA", "TDMA"])
-            mat = col2.selectbox("Material", sorted(base["Material"].unique()))
-            lvm = st.text_input("LVM").upper().strip()
-            qtd = st.number_input("Quantidade", min_value=1, step=1)
-            obr = st.text_input("Obra").upper().strip()
-            pep = st.text_input("PEP").upper().strip()
-            if st.form_submit_button("GRAVAR NO ESTOQUE"):
-                get_coll("movements").add({
-                    "Tipo": tipo, "Material": mat, "LVM": lvm, "Qtde": qtd, 
-                    "Obra": obr, "ElementoPEP": pep, 
-                    "Data": datetime.now().strftime('%d/%m/%Y'),
-                    "timestamp": firestore.SERVER_TIMESTAMP
-                })
-                st.success("Movimentação registada!")
-                time.sleep(1)
-                st.rerun()
+        # ABAS: Individual e Lote (Reintroduzido)
+        tab_ind, tab_lote = st.tabs(["📝 Lançamento Individual", "📁 Importação em Lote (Excel)"])
+        
+        with tab_ind:
+            with st.form("f_mov"):
+                col1, col2 = st.columns(2)
+                tipo = col1.selectbox("Operação", ["SAIDA", "ENTRADA", "TMA", "TDMA"])
+                mat = col2.selectbox("Material", sorted(base["Material"].unique()))
+                lvm = st.text_input("LVM").upper().strip()
+                qtd = st.number_input("Quantidade", min_value=1, step=1)
+                obr = st.text_input("Obra").upper().strip()
+                pep = st.text_input("PEP").upper().strip()
+                if st.form_submit_button("GRAVAR NO ESTOQUE"):
+                    get_coll("movements").add({
+                        "Tipo": tipo, "Material": mat, "LVM": lvm, "Qtde": qtd, 
+                        "Obra": obr, "ElementoPEP": pep, 
+                        "Data": datetime.now().strftime('%d/%m/%Y'),
+                        "timestamp": firestore.SERVER_TIMESTAMP
+                    })
+                    st.success("Movimentação registada!")
+                    time.sleep(1)
+                    st.rerun()
+
+        with tab_lote:
+            st.subheader("📁 Upload de Arquivos de Movimentação")
+            st.info("O Excel deve conter as colunas: Material, LVM, Qtde, Obra, ElementoPEP, Data")
+            tipo_up = st.selectbox("Tipo para este ficheiro", ["SAIDA", "ENTRADA", "TMA", "TDMA"])
+            up_mov = st.file_uploader(f"Selecione o ficheiro de {tipo_up}", type="xlsx")
+            
+            if up_mov and st.button(f"🚀 Importar Registos de {tipo_up}"):
+                try:
+                    df_up = pd.read_excel(up_mov, dtype=str)
+                    coll = get_coll("movements")
+                    ts = firestore.SERVER_TIMESTAMP
+                    for _, r in df_up.iterrows():
+                        d = r.to_dict()
+                        d["Tipo"] = tipo_up
+                        d["timestamp"] = ts
+                        coll.add(d)
+                    st.success(f"Importação de {len(df_up)} registros concluída!")
+                    time.sleep(1)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Erro ao processar o ficheiro: {e}")
 
     # --- PÁGINA: EQUIPA ---
     elif menu == "👥 Gestão de Acessos":
