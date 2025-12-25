@@ -17,7 +17,7 @@ def inicializar_firebase():
     """Inicializa a ligação ao Firebase de forma persistente."""
     try:
         if "firebase" not in st.secrets:
-            return None, "ERRO: Secrets não configuradas."
+            return None, "ERRO: Secrets não configuradas no Cloud."
         
         config = dict(st.secrets["firebase"])
         
@@ -29,7 +29,7 @@ def inicializar_firebase():
                 pk = pk + "\n-----END PRIVATE KEY-----\n"
             config["private_key"] = pk
             
-        app_name = "marcius-estoque-v30"
+        app_name = "marcius-estoque-v31"
         
         if not firebase_admin._apps:
             cred = credentials.Certificate(config)
@@ -42,7 +42,7 @@ def inicializar_firebase():
 
 # Inicialização do DB
 db, erro_conexao = inicializar_firebase()
-PROJECT_ID = "marcius-estoque-pro-v30"
+PROJECT_ID = "marcius-estoque-pro-v31"
 
 # --- 2. GESTÃO DE DADOS ---
 
@@ -50,7 +50,7 @@ def get_coll(nome):
     if db is None: return None
     return db.collection("artifacts").document(PROJECT_ID).collection("public").document("data").collection(nome)
 
-@st.cache_data(ttl=300) # Cache de 5 minutos para performance
+@st.cache_data(ttl=60)
 def carregar_base_mestra():
     coll = get_coll("master_csv_store")
     if coll is None: return pd.DataFrame()
@@ -79,10 +79,16 @@ def carregar_users():
     if coll is None: return {}
     try:
         docs = coll.stream()
-        return {d.to_dict()["username"]: d.to_dict() for d in docs}
+        users_map = {d.to_dict()["username"].lower().strip(): d.to_dict() for d in docs}
+        # Se a base estiver vazia, cria o admin padrão na nuvem
+        if not users_map:
+            admin = {"username": "marcius.arruda", "password": "MwsArruda", "nivel": "admin"}
+            coll.add(admin)
+            return {"marcius.arruda": admin}
+        return users_map
     except: return {}
 
-# --- 3. CÁLCULOS ---
+# --- 3. LÓGICA DE NEGÓCIO ---
 
 def calcular_saldos():
     base = carregar_base_mestra()
@@ -113,130 +119,145 @@ def calcular_saldos():
     inv["Saldo_KG"] = inv["Saldo_Pecas"] * inv["Peso"]
     return inv[inv["Saldo_Pecas"] > 0].sort_values(by=["Obra", "LVM"])
 
-# --- 4. RELATÓRIOS ---
-
-def gerar_pdf(df):
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("helvetica", "B", 12)
-    pdf.cell(0, 10, "Mapa de Estoque - Marcius Estoque", ln=True, align="C")
-    pdf.set_font("helvetica", "", 8)
-    pdf.ln(5)
-    # Cabeçalho da tabela
-    headers = ["LVM", "Material", "Obra", "Qtd", "Kg"]
-    for h in headers: pdf.cell(38, 7, h, 1)
-    pdf.ln()
-    for _, r in df.head(100).iterrows(): # Limite para o PDF não ficar gigante no mobile
-        pdf.cell(38, 6, str(r['LVM'])[:15], 1)
-        pdf.cell(38, 6, str(r['Material']), 1)
-        pdf.cell(38, 6, str(r['Obra'])[:15], 1)
-        pdf.cell(38, 6, str(int(r['Saldo_Pecas'])), 1)
-        pdf.cell(38, 6, f"{r['Saldo_KG']:.1f}", 1)
-        pdf.ln()
-    return pdf.output()
-
-# --- 5. INTERFACE ---
+# --- 4. INTERFACE ---
 
 def main():
-    st.set_page_config(page_title="Marcius Estoque Pro", layout="wide")
+    st.set_page_config(page_title="Marcius Estoque Pro", layout="wide", page_icon="🏗️")
 
-    # CSS para Mobile
     st.markdown("""
         <style>
-            .stButton>button { width: 100%; border-radius: 10px; height: 3.5em; font-weight: bold; }
-            .login-card { background: white; padding: 2rem; border-radius: 1rem; border: 1px solid #eee; }
+            .stButton>button { width: 100%; border-radius: 10px; height: 3.5em; font-weight: bold; background-color: #1e3a8a; color: white; }
+            .login-card { background: white; padding: 2.5rem; border-radius: 1.5rem; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); border: 1px solid #f1f5f9; }
+            .stTextInput>div>div>input { height: 3.5em; }
         </style>
     """, unsafe_allow_html=True)
 
     if db is None:
-        st.error(f"🔴 Erro de Ligação: {erro_conexao}")
+        st.error(f"🔴 Erro de Ligação ao Banco de Dados: {erro_conexao}")
         return
 
+    # Carrega utilizadores da nuvem
     users = carregar_users()
+    
     if "logado" not in st.session_state: st.session_state.logado = False
 
     if not st.session_state.logado:
-        st.markdown("<h1 style='text-align: center;'>🏗️ Gestão de Estoque</h1>", unsafe_allow_html=True)
-        _, col, _ = st.columns([1, 4, 1])
+        st.markdown("<br><h1 style='text-align: center; color: #1e3a8a;'>🏗️ Gestão de Estoque Chapas</h1>", unsafe_allow_html=True)
+        _, col, _ = st.columns([1, 3, 1])
+        
         with col:
-            with st.container():
-                u = st.text_input("Utilizador").lower().strip()
-                p = st.text_input("Senha", type="password").strip()
-                if st.button("ENTRAR"):
-                    if u in users and users[u]["password"] == p:
+            st.markdown("<div class='login-card'>", unsafe_allow_html=True)
+            u = st.text_input("Utilizador").lower().strip()
+            p = st.text_input("Senha", type="password").strip()
+            
+            if st.button("ENTRAR NO SISTEMA"):
+                if not u or not p:
+                    st.warning("Por favor, preencha todos os campos.")
+                elif u in users:
+                    if users[u]["password"] == p:
                         st.session_state.logado = True
                         st.session_state.user = users[u]
+                        st.success("Acesso confirmado! A carregar...")
+                        time.sleep(0.5)
                         st.rerun()
-                    else: st.error("Utilizador ou Senha incorretos.")
+                    else:
+                        st.error("Senha incorreta. Verifique maiúsculas/minúsculas.")
+                else:
+                    st.error(f"Utilizador '{u}' não encontrado na base de dados.")
+            st.markdown("</div>", unsafe_allow_html=True)
             
-            st.divider()
-            with st.expander("⚠️ Problemas ao aceder pelo Telemóvel?"):
-                st.write("""
-                Se estiver a ver o erro **"Too many redirects"**:
-                1. Use o **Google Chrome** em vez do Safari.
-                2. Abra o link em **Modo Incógnito/Anónimo**.
-                3. Limpe os 'Cookies' e 'Dados de Navegação' nas definições do telemóvel.
-                4. Verifique se o telemóvel não está a 'bloquear cookies de terceiros'.
-                """)
+            with st.expander("❓ Ajuda com o Login"):
+                st.write(f"**Utilizadores detetados na nuvem:** {', '.join(users.keys())}")
+                st.write("1. Garanta que não há espaços antes ou depois da senha.")
+                st.write("2. A senha diferencia letras MAIÚSCULAS de minúsculas.")
+                if st.button("🔄 Limpar Cache de Sessão"):
+                    st.cache_data.clear()
+                    st.rerun()
         return
 
-    # Menu
+    # Interface após login
     nav = ["📊 Dashboard", "🔄 Movimentações", "👤 Conta"]
-    if st.session_state.user['nivel'] == "admin": nav += ["📂 Base Mestra", "👥 Equipa"]
+    if st.session_state.user.get('nivel') == "admin": 
+        nav += ["📂 Base Mestra", "👥 Gestão de Acessos"]
     
     menu = st.sidebar.radio("Navegação", nav)
-    st.sidebar.button("Terminar Sessão", on_click=lambda: st.session_state.update({"logado": False}))
+    st.sidebar.divider()
+    st.sidebar.write(f"👤 **{st.session_state.user['username']}**")
+    
+    if st.sidebar.button("Sair"):
+        st.session_state.logado = False
+        st.rerun()
 
     if menu == "📊 Dashboard":
-        st.title("📊 Painel de Controle")
+        st.title("📊 Painel de Controle de Estoque")
         df = calcular_saldos()
         if df.empty:
-            st.info("💡 Carregue a Base Mestra para ver dados.")
+            st.info("💡 Inventário vazio. Administrador: carregue a Base Mestra.")
         else:
-            # KPIs
             c1, c2, c3 = st.columns(3)
-            c1.metric("Peças", f"{int(df['Saldo_Pecas'].sum()):,}")
-            c2.metric("Total KG", f"{df['Saldo_KG'].sum():,.1f}")
-            c3.metric("LVMs", len(df["LVM"].unique()))
+            c1.metric("Peças Totais", f"{int(df['Saldo_Pecas'].sum()):,}")
+            c2.metric("Peso Total (KG)", f"{df['Saldo_KG'].sum():,.1f}")
+            c3.metric("Itens Únicos", len(df))
             
-            # Gráficos simples para mobile
-            col1, col2 = st.columns(2)
-            with col1:
-                st.plotly_chart(px.pie(df.groupby("Obra")["Saldo_Pecas"].sum().reset_index().nlargest(5, "Saldo_Pecas"), values="Saldo_Pecas", names="Obra", title="Top 5 Obras"), use_container_width=True)
-            with col2:
-                st.plotly_chart(px.bar(df.groupby("Grau")["Saldo_KG"].sum().reset_index(), x="Grau", y="Saldo_KG", title="Peso por Grau"), use_container_width=True)
-            
+            st.divider()
             st.dataframe(df, use_container_width=True, hide_index=True)
 
     elif menu == "🔄 Movimentações":
-        st.title("🔄 Registos")
+        st.title("🔄 Registar Movimento")
         base = carregar_base_mestra()
-        if base.empty: st.warning("Carregue a base primeiro."); return
+        if base.empty: st.warning("Carregue a Base Mestra primeiro."); return
         
         with st.form("f_mov"):
             tipo = st.selectbox("Operação", ["SAIDA", "ENTRADA", "TMA", "TDMA"])
             mat = st.selectbox("Material", sorted(base["Material"].unique()))
             lvm = st.text_input("LVM").upper().strip()
-            qtd = st.number_input("Qtde", min_value=1, step=1)
+            qtd = st.number_input("Quantidade", min_value=1, step=1)
             obr = st.text_input("Obra").upper().strip()
             pep = st.text_input("PEP").upper().strip()
-            if st.form_submit_button("GRAVAR"):
-                get_coll("movements").add({"Tipo": tipo, "Material": mat, "LVM": lvm, "Qtde": qtd, "Obra": obr, "ElementoPEP": pep, "Data": datetime.now().strftime('%Y-%m-%d'), "timestamp": firestore.SERVER_TIMESTAMP})
-                st.success("Gravado!"); time.sleep(1); st.rerun()
+            if st.form_submit_button("GRAVAR NO ESTOQUE"):
+                get_coll("movements").add({
+                    "Tipo": tipo, "Material": mat, "LVM": lvm, "Qtde": qtd, 
+                    "Obra": obr, "ElementoPEP": pep, 
+                    "Data": datetime.now().strftime('%d/%m/%Y'),
+                    "timestamp": firestore.SERVER_TIMESTAMP
+                })
+                st.success("Movimentação registada com sucesso!")
+                time.sleep(1)
+                st.rerun()
+
+    elif menu == "👥 Gestão de Acessos":
+        st.title("👥 Gestão de Utilizadores")
+        with st.form("f_add_user"):
+            new_u = st.text_input("Novo Utilizador").lower().strip()
+            new_p = st.text_input("Senha")
+            new_n = st.selectbox("Nível", ["operador", "admin", "consulta"])
+            if st.form_submit_button("CRIAR UTILIZADOR NA NUVEM"):
+                if new_u and new_p:
+                    get_coll("users").add({"username": new_u, "password": new_p, "nivel": new_n})
+                    st.success(f"Utilizador {new_u} criado com sucesso!")
+                    st.rerun()
+        
+        st.divider()
+        st.subheader("Utilizadores Ativos")
+        for u_name, u_data in users.items():
+            st.write(f"• **{u_name}** ({u_data['nivel']})")
 
     elif menu == "📂 Base Mestra":
-        st.title("📂 Sincronização")
-        f = st.file_uploader("Subir Excel", type="xlsx")
-        if f and st.button("🚀 ATUALIZAR NUVEM"):
+        st.title("📂 Sincronizar Base Mestra")
+        f = st.file_uploader("Carregar Excel da Base Mestra", type="xlsx")
+        if f and st.button("🚀 ENVIAR PARA A NUVEM"):
             df_m = pd.read_excel(f, dtype=str)
             coll = get_coll("master_csv_store")
+            # Limpa dados antigos
             for d in coll.stream(): d.reference.delete()
+            # Fragmenta CSV para o Firestore
             csv_t = df_m.to_csv(index=False)
             size = 800000
-            for i, p in enumerate([csv_t[i:i+size] for i in range(0, len(csv_t), size)]):
+            parts = [csv_t[i:i+size] for i in range(0, len(csv_t), size)]
+            for i, p in enumerate(parts):
                 coll.document(f"p_{i}").set({"part": i, "csv_data": p})
             st.cache_data.clear()
-            st.success("Sincronizado!"); st.balloons()
+            st.success("Base Mestra sincronizada com sucesso!")
 
 if __name__ == "__main__":
     main()
