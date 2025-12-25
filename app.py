@@ -199,7 +199,7 @@ def main():
             f_obra = st.sidebar.multiselect("Obra", sorted(df_base["Obra"].unique()))
             f_pep = st.sidebar.multiselect("Elemento PEP", sorted(df_base["ElementoPEP"].unique()))
             
-            # FILTRO: Grau (Garantindo que o termo seja Grau)
+            # FILTRO: Grau
             f_grau = st.sidebar.multiselect("Grau", sorted(df_base["Grau"].unique()))
             
             f_esp = st.sidebar.multiselect("Espessura", sorted(df_base["Esp"].unique()))
@@ -229,7 +229,8 @@ def main():
             # Gráficos
             g1, g2 = st.columns(2)
             with g1:
-                pie_data = df_v.groupby("Obra")["Saldo_Pecas'].sum().reset_index().nlargest(10, "Saldo_Pecas")
+                # CORREÇÃO: Removido erro de aspas na linha abaixo
+                pie_data = df_v.groupby("Obra")["Saldo_Pecas"].sum().reset_index().nlargest(10, "Saldo_Pecas")
                 fig1 = px.pie(pie_data, values="Saldo_Pecas", names="Obra", title="Top 10 Obras (Peças)", hole=0.4)
                 st.plotly_chart(fig1, use_container_width=True)
             with g2:
@@ -250,7 +251,7 @@ def main():
         base = carregar_base_mestra()
         if base.empty: st.warning("Carregue a Base Mestra primeiro."); return
         
-        # ABAS: Individual e Lote (Reintroduzido)
+        # ABAS: Individual e Lote
         tab_ind, tab_lote = st.tabs(["📝 Lançamento Individual", "📁 Importação em Lote (Excel)"])
         
         with tab_ind:
