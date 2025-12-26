@@ -29,7 +29,7 @@ def inicializar_firebase():
                 pk = pk + "\n-----END PRIVATE KEY-----\n"
             config["private_key"] = pk
             
-        app_name = "marcius-estoque-v41"
+        app_name = "marcius-estoque-v42"
         
         if not firebase_admin._apps:
             cred = credentials.Certificate(config)
@@ -41,7 +41,7 @@ def inicializar_firebase():
         return None, f"Erro: {str(e)}"
 
 db, erro_conexao = inicializar_firebase()
-PROJECT_ID = "marcius-estoque-pro-v41"
+PROJECT_ID = "marcius-estoque-pro-v42"
 
 # --- 2. GESTÃO E PADRONIZAÇÃO DE DADOS ---
 
@@ -81,7 +81,6 @@ def padronizar_colunas(df):
         if col_original in mapa_traducoes:
             novas_cols[col_original] = mapa_traducoes[col_original]
         else:
-            # Se não estiver no mapa, apenas capitaliza a primeira letra para manter limpo
             novas_cols[col_original] = col_original.capitalize()
             
     return df.rename(columns=novas_cols)
@@ -113,12 +112,22 @@ def carregar_movimentos():
     except: return pd.DataFrame()
 
 def carregar_users():
+    """Carrega utilizadores e garante a existência do administrador padrão."""
     coll = get_coll("users")
     if coll is None: return {}
     try:
-        docs = coll.stream()
-        return {d.to_dict()["username"].lower().strip(): d.to_dict() for d in docs}
-    except: return {}
+        docs = list(coll.stream())
+        users_map = {d.to_dict()["username"].lower().strip(): d.to_dict() for d in docs}
+        
+        # Se a base estiver vazia, cria o admin padrão para garantir o acesso inicial
+        if not users_map:
+            admin_data = {"username": "marcius.arruda", "password": "MwsArruda", "nivel": "admin"}
+            coll.add(admin_data)
+            return {"marcius.arruda": admin_data}
+            
+        return users_map
+    except: 
+        return {}
 
 # --- 3. LÓGICA DE CÁLCULO (SOMA E SALDO) ---
 
@@ -136,7 +145,7 @@ def calcular_saldos():
             base[c] = base[c].astype(str).str.strip().str.upper()
             base[c] = base[c].apply(lambda x: x.replace(".0", "") if x.endswith(".0") else x)
 
-    # Inventário Base (Quantidade Original do Excel Master)
+    # Inventário Base
     inv = base.groupby(chaves + especs).agg({
         "Descritivomaterial": "first", 
         "Peso": "first"
@@ -147,7 +156,6 @@ def calcular_saldos():
     
     movs = carregar_movimentos()
     if not movs.empty:
-        # Limpeza nos Movimentos
         for c in chaves:
             if c in movs.columns:
                 movs[c] = movs[c].astype(str).str.strip().str.upper()
@@ -155,8 +163,6 @@ def calcular_saldos():
         
         if "Qtde" in movs.columns:
             movs["Qtd_N"] = pd.to_numeric(movs["Qtde"], errors="coerce").fillna(0)
-            
-            # LÓGICA DE SOMA (ENTRADA/TDMA soma, o resto subtrai)
             movs["Impacto"] = movs.apply(
                 lambda x: x["Qtd_N"] if str(x.get("Tipo", "")).strip().upper() in ["ENTRADA", "TDMA"] 
                 else -x["Qtd_N"], axis=1
@@ -206,6 +212,7 @@ def main():
         <style>
             .stButton>button { width: 100%; border-radius: 10px; height: 3.5em; font-weight: bold; background-color: #1e3a8a; color: white; }
             .login-card { background: white; padding: 2.5rem; border-radius: 1.5rem; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); border: 1px solid #f1f5f9; }
+            .stTextInput>div>div>input { height: 3.5em; }
         </style>
     """, unsafe_allow_html=True)
 
@@ -213,7 +220,9 @@ def main():
         st.error(f"🔴 Erro de Ligação ao Banco de Dados: {erro_conexao}")
         return
 
+    # Tenta carregar os utilizadores da nuvem
     users = carregar_users()
+    
     if "logado" not in st.session_state: st.session_state.logado = False
 
     if not st.session_state.logado:
@@ -223,13 +232,22 @@ def main():
             st.markdown("<div class='login-card'>", unsafe_allow_html=True)
             u_input = st.text_input("Utilizador").lower().strip()
             p_input = st.text_input("Senha", type="password").strip()
+            
             if st.button("ACESSAR SISTEMA"):
-                if u_input in users and users[u_input]["password"] == p_input:
-                    st.session_state.logado = True
-                    st.session_state.user = users[u_input]
-                    st.rerun()
-                else: st.error("Credenciais inválidas.")
+                if u_input in users:
+                    if users[u_input]["password"] == p_input:
+                        st.session_state.logado = True
+                        st.session_state.user = users[u_input]
+                        st.rerun()
+                    else:
+                        st.error("Senha incorreta. Verifique maiúsculas e minúsculas.")
+                else:
+                    st.error(f"Utilizador '{u_input}' não encontrado na base de dados.")
             st.markdown("</div>", unsafe_allow_html=True)
+            
+            with st.expander("💡 Dica de Acesso"):
+                st.write(f"Utilizadores detectados: {', '.join(users.keys())}")
+                st.write("Admin padrão: marcius.arruda / MwsArruda")
         return
 
     nav = ["📊 Dashboard", "🔄 Movimentações", "👤 Conta"]
@@ -255,10 +273,7 @@ def main():
 
             f_obra = st.sidebar.multiselect("Obra", get_opts("Obra"))
             f_pep = st.sidebar.multiselect("Elemento PEP", get_opts("ElementoPEP"))
-            
-            # FILTRO: Grau (Garantido pela padronização universal)
             f_grau = st.sidebar.multiselect("Grau", get_opts("Grau"))
-            
             f_esp = st.sidebar.multiselect("Espessura", get_opts("Esp"))
             f_larg = st.sidebar.multiselect("Largura", get_opts("Larg"))
             f_comp = st.sidebar.multiselect("Comprimento", get_opts("Comp"))
@@ -323,7 +338,7 @@ def main():
             f_lote = st.file_uploader(f"Selecione o Excel de {tp_lote}", type="xlsx")
             if f_lote and st.button("🚀 Iniciar Importação"):
                 df_up = pd.read_excel(f_lote, dtype=str)
-                df_up = padronizar_colunas(df_up) # Padroniza Grau, Material, Qtde automaticamente
+                df_up = padronizar_colunas(df_up)
                 
                 coll = get_coll("movements")
                 ts = firestore.SERVER_TIMESTAMP
@@ -350,6 +365,23 @@ def main():
                 coll.document(f"p_{i}").set({"part": i, "csv_data": p})
             st.cache_data.clear()
             st.success("Catálogo atualizado!"); st.balloons()
+
+    # --- TELA: GESTÃO DE ACESSOS ---
+    elif menu == "👥 Gestão de Acessos":
+        st.title("👥 Gestão de Equipa")
+        with st.form("f_add_user"):
+            new_u = st.text_input("Novo Utilizador").lower().strip()
+            new_p = st.text_input("Senha")
+            new_n = st.selectbox("Nível", ["operador", "admin", "consulta"])
+            if st.form_submit_button("CRIAR CONTA"):
+                if new_u and new_p:
+                    get_coll("users").add({"username": new_u, "password": new_p, "nivel": new_n})
+                    st.success(f"Utilizador {new_u} criado!")
+                    st.rerun()
+        st.divider()
+        st.subheader("Utilizadores Ativos")
+        for u_name, u_data in users.items():
+            st.write(f"• **{u_name}** | Nível: {u_data.get('nivel', 'N/A')}")
 
 if __name__ == "__main__":
     main()
