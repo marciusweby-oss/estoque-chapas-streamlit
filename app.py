@@ -20,14 +20,19 @@ def inicializar_firebase():
         if "private_key" in config:
             pk = config["private_key"].replace("\\n", "\n").strip().strip('"').strip("'")
             config["private_key"] = pk
-            
         app_name = "marcius-estoque-v28"
         if not firebase_admin._apps:
             cred = credentials.Certificate(config)
             firebase_admin.initialize_app(cred, name=app_name)
+        else:
+            try:
+                firebase_admin.get_app(app_name)
+            except ValueError:
+                cred = credentials.Certificate(config)
+                firebase_admin.initialize_app(cred, name=app_name)
         return firestore.client(app=firebase_admin.get_app(app_name)), None
     except Exception as e:
-        return None, str(e)
+        return None, f"Erro de conexão: {str(e)}"
 
 db, erro_conexao = inicializar_firebase()
 PROJECT_ID = "marcius-estoque-pro-v28"
@@ -37,17 +42,6 @@ PROJECT_ID = "marcius-estoque-pro-v28"
 def get_coll(nome):
     if db is None: return None
     return db.collection("artifacts").document(PROJECT_ID).collection("public").document("data").collection(nome)
-
-def padronizar_nome_colunas(df):
-    if df.empty: return df
-    df.columns = [str(c).strip() for c in df.columns]
-    # Troca definitiva de Cinza para Grau e padronização técnica
-    df = df.rename(columns={
-        'Cinza': 'Grau', 'cinza': 'Grau', 'GRAU': 'Grau',
-        'Espessura': 'Esp', 'Largura': 'Larg', 'Comprimento': 'Comp',
-        'Descritivomaterial': 'DescritivoMaterial', 'DescritivoMaterial': 'DescritivoMaterial'
-    })
-    return df
 
 @st.cache_data(ttl=60)
 def carregar_base_mestra():
@@ -59,7 +53,7 @@ def carregar_base_mestra():
         csv_raw = "".join([d.get("csv_data", "") for d in lista])
         if not csv_raw: return pd.DataFrame()
         df = pd.read_csv(io.StringIO(csv_raw), dtype=str)
-        df = padronizar_nome_colunas(df)
+        df = df.rename(columns={'Cinza': 'Grau', 'cinza': 'Grau', 'Espessura': 'Esp', 'Largura': 'Larg', 'Comprimento': 'Comp'})
         for col in ["Peso", "Larg", "Comp", "Esp"]:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col].astype(str).str.replace(",", "."), errors="coerce").fillna(0)
@@ -73,7 +67,7 @@ def carregar_movimentos():
         docs = coll.stream()
         dados = [d.to_dict() for d in docs]
         df = pd.DataFrame(dados) if dados else pd.DataFrame()
-        return padronizar_nome_colunas(df)
+        return df.rename(columns={'Cinza': 'Grau', 'cinza': 'Grau', 'Espessura': 'Esp', 'Largura': 'Larg', 'Comprimento': 'Comp'})
     except: return pd.DataFrame()
 
 def carregar_users():
@@ -81,52 +75,32 @@ def carregar_users():
     if coll is None: return {}
     try:
         docs = coll.stream()
-        return {d.to_dict()["username"].lower().strip(): d.to_dict() for d in docs}
+        return {d.to_dict()["username"]: d.to_dict() for d in docs}
     except: return {}
 
-# --- 3. LÓGICA DE NEGÓCIO (SOMA E CONSOLIDAÇÃO) ---
+# --- 3. LÓGICA DE NEGÓCIO ---
 
 def calcular_saldos():
     base = carregar_base_mestra()
-    movs = carregar_movimentos()
+    if base.empty: return pd.DataFrame()
     chaves = ["LVM", "Material", "Obra", "ElementoPEP", "Grau", "Esp", "Larg", "Comp"]
-    
-    if not base.empty:
-        for c in chaves: 
-            if c in base.columns: base[c] = base[c].astype(str).str.strip().str.upper().replace(r'\.0$', '', regex=True)
-        
-        inv_base = base.groupby(chaves).agg({
-            "DescritivoMaterial": "first", "Peso": "first"
-        }).reset_index()
-        inv_base["Qtd_Inicial"] = base.groupby(chaves).size().values
-    else:
-        inv_base = pd.DataFrame(columns=chaves + ["Qtd_Inicial", "Peso", "DescritivoMaterial"])
-
-    if not movs.empty:
+    for c in chaves:
+        if c in base.columns: base[c] = base[c].astype(str).str.strip().str.upper()
+    inv = base.groupby(chaves).agg({"DescritivoMaterial": "first", "Peso": "first", "Material": "count"}).rename(columns={"Material": "Qtd_Inicial"}).reset_index()
+    movs = carregar_movimentos()
+    if not movs.empty and "Tipo" in movs.columns:
         for c in chaves:
-            if c in movs.columns: movs[c] = movs[c].astype(str).str.strip().str.upper().replace(r'\.0$', '', regex=True)
-        
+            if c in movs.columns: movs[c] = movs[c].astype(str).str.strip().str.upper()
         movs["Qtd_N"] = pd.to_numeric(movs["Qtde"], errors="coerce").fillna(0)
         movs["Impacto"] = movs.apply(lambda x: x["Qtd_N"] if str(x.get("Tipo","")).upper() in ["ENTRADA", "TDMA"] else -x["Qtd_N"], axis=1)
         resumo = movs.groupby(chaves)["Impacto"].sum().reset_index()
-    else:
-        resumo = pd.DataFrame(columns=chaves + ["Impacto"])
+        inv = pd.merge(inv, resumo, on=chaves, how="left").fillna(0)
+    else: inv["Impacto"] = 0
+    inv["Saldo_Pecas"] = inv["Qtd_Inicial"] + inv["Impacto"]
+    inv["Saldo_KG"] = inv["Saldo_Pecas"] * pd.to_numeric(inv["Peso"], errors="coerce").fillna(0)
+    return inv[inv["Saldo_Pecas"] > 0].sort_values(by=["Obra", "LVM"])
 
-    # MERGE OUTER PARA UNIR TUDO SEM PERDER ENTRADAS
-    df_f = pd.merge(inv_base, resumo, on=chaves, how="outer").fillna(0)
-    
-    # Consolidação final para garantir que o cartão não duplique a soma
-    df_f = df_f.groupby(chaves).agg({
-        "DescritivoMaterial": "max", "Peso": "max", "Qtd_Inicial": "sum", "Impacto": "sum"
-    }).reset_index()
-
-    df_f["Saldo_Pecas"] = df_f["Qtd_Inicial"] + df_f["Impacto"]
-    df_f["Peso_N"] = pd.to_numeric(df_f["Peso"].astype(str).str.replace(",", "."), errors="coerce").fillna(0)
-    df_f["Saldo_KG"] = df_f["Saldo_Pecas"] * df_f["Peso_N"]
-    
-    return df_f[df_f["Saldo_Pecas"] > 0].sort_values(by=["Obra", "LVM"])
-
-# --- 4. EXPORTAÇÃO PDF CORRIGIDA ---
+# --- 4. EXPORTAÇÃO PDF ---
 
 class EstoquePDF(FPDF):
     def header(self):
@@ -150,108 +124,143 @@ def gerar_pdf(df):
         pdf.cell(38, 7, f"{int(r['Saldo_Pecas'])}", 1, 1, "R")
     return bytes(pdf.output(dest='S'))
 
-# --- 5. INTERFACE COMPLETA ---
+# --- 5. INTERFACE ---
 
 def main():
     st.set_page_config(page_title="Gestão de Estoque", layout="wide", page_icon="🏗️")
 
-    # Identidade Visual no Topo
-    with st.container():
-        col_l, col_t = st.columns([1, 4])
-        with col_l:
-            if os.path.exists("logo_empresa.png"): st.image("logo_empresa.png", width=120)
-            else: st.markdown("## 🏗️")
-        with col_t: st.markdown("<h1 style='color: #1e3a8a;'>Gestão de Estoque</h1>", unsafe_allow_html=True)
-    st.divider()
+    st.markdown("""
+        <style>
+            .stButton>button { width: 100%; border-radius: 12px; height: 3.5em; font-weight: bold; background-color: #f8f9fa; border: 1px solid #d1d3e2; }
+            .stMetric { background-color: white; padding: 15px; border-radius: 12px; border: 1px solid #eee; }
+            .login-card { background-color: #ffffff; padding: 30px; border-radius: 20px; box-shadow: 0 10px 25px rgba(0,0,0,0.05); border: 1px solid #eee; }
+        </style>
+    """, unsafe_allow_html=True)
+
+    with st.sidebar:
+        if os.path.exists("logo_empresa.png"):
+            st.image("logo_empresa.png", use_container_width=True)
+        if db is not None:
+            st.markdown("<div style='color: green; font-size: 0.85em; text-align: center;'>● Ligação Ativa</div>", unsafe_allow_html=True)
+        st.divider()
 
     if "logado" not in st.session_state: st.session_state.logado = False
     users = carregar_users()
 
-    # --- TELA DE LOGIN ---
     if not st.session_state.logado:
-        st.subheader("🔑 Controle de Acesso")
-        u = st.text_input("Utilizador").lower().strip()
-        p = st.text_input("Senha", type="password")
-        if st.button("Acessar Sistema"):
-            if u in users and users[u]["password"] == p:
-                st.session_state.logado, st.session_state.user = True, users[u]
-                st.rerun()
-            else: st.error("Credenciais inválidas.")
+        st.markdown("<br><h1 style='text-align: center; color: #1e3a8a;'>🏗️ Sistema de Gestão de Estoque</h1>", unsafe_allow_html=True)
+        col_a, col_b, col_c = st.columns([1, 4, 1])
+        with col_b:
+            st.markdown("<div class='login-card'>", unsafe_allow_html=True)
+            u_in = st.text_input("Usuário").lower().strip()
+            p_in = st.text_input("Senha", type="password").strip()
+            if st.button("ENTRAR"):
+                if u_in in users and users[u_in]["password"] == p_in:
+                    st.session_state.logado, st.session_state.user = True, users[u_in]
+                    st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    # Navegação Completa
-    nav = ["📊 Dashboard", "🔄 Movimentações", "👤 Minha Conta"]
-    if st.session_state.user.get('nivel') == "Admin": nav += ["📂 Base Mestra", "👥 Gestão de Acessos"]
+    nav = ["🔍 Filtros", "📊 Dashboard", "🔄 Movimentações", "👤 Minha Conta"]
+    if st.session_state.user['nivel'] == "Admin": nav += ["📂 Base Mestra", "👥 Gestão de Acessos"]
+    
     menu = st.sidebar.radio("Navegação", nav)
     
-    st.sidebar.divider()
     if st.sidebar.button("🚪 Terminar Sessão"):
         st.session_state.logado = False
         st.rerun()
 
-    if menu == "📊 Dashboard":
-        st.subheader("📊 Painel de Estoque")
-        df = calcular_saldos()
+    # --- ABA: FILTROS (CASCATA TOTAL INCLUINDO LVM) ---
+    if menu == "🔍 Filtros":
+        st.title("🔍 Configurar Filtros de Estoque")
+        df_full = calcular_saldos()
         
-        if not df.empty:
-            # Filtros na lateral
-            st.sidebar.header("🔍 Filtros")
-            f_lvm = st.sidebar.text_input("Pesquisar LVM").upper().strip()
-            f_mat = st.sidebar.multiselect("Material", sorted(df["Material"].unique()))
-            f_obra = st.sidebar.multiselect("Obra", sorted(df["Obra"].unique()))
-            f_pep = st.sidebar.multiselect("Elemento PEP", sorted(df["ElementoPEP"].unique()))
-            f_grau = st.sidebar.multiselect("Grau", sorted(df["Grau"].unique()))
-            f_esp = st.sidebar.multiselect("Espessura", sorted(df["Esp"].unique()))
-            f_larg = st.sidebar.multiselect("Largura", sorted(df["Larg"].unique()))
-            f_comp = st.sidebar.multiselect("Comprimento", sorted(df["Comp"].unique()))
+        if not df_full.empty:
+            filtros_cols = ["Material", "Obra", "Grau", "Esp", "Larg", "Comp"]
+            for col in filtros_cols:
+                if f"filter_{col}" not in st.session_state: st.session_state[f"filter_{col}"] = []
+            if "filter_lvm" not in st.session_state: st.session_state.filter_lvm = ""
 
-            # Aplicar filtros dinâmicos
-            df_v = df.copy()
-            if f_lvm: df_v = df_v[df_v["LVM"].str.contains(f_lvm, na=False)]
-            if f_mat: df_v = df_v[df_v["Material"].isin(f_mat)]
-            if f_obra: df_v = df_v[df_v["Obra"].isin(f_obra)]
-            if f_pep: df_v = df_v[df_v["ElementoPEP"].isin(f_pep)]
-            if f_grau: df_v = df_v[df_v["Grau"].isin(f_grau)]
-            if f_esp: df_v = df_v[df_v["Esp"].isin(f_esp)]
-            if f_larg: df_v = df_v[df_v["Larg"].isin(f_larg)]
-            if f_comp: df_v = df_v[df_v["Comp"].isin(f_comp)]
+            # 1. Primeiro capturamos a LVM para filtrar a base de opções dos outros campos
+            st.session_state.filter_lvm = st.text_input("1. Digite a LVM para restringir as opções", value=st.session_state.filter_lvm).upper().strip()
 
-            # MÉTRICAS DINÂMICAS (MUDAM COM O FILTRO LVM)
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Peças Filtradas", f"{int(df_v['Saldo_Pecas'].sum()):,}")
-            c2.metric("Peso Filtrado (KG)", f"{df_v['Saldo_KG'].sum():,.2f}")
-            c3.metric("LVMs Ativas", len(df_v["LVM"].unique()))
+            def obter_opcoes(coluna_alvo):
+                temp_df = df_full.copy()
+                # Aplica o filtro de texto da LVM primeiro
+                if st.session_state.filter_lvm:
+                    temp_df = temp_df[temp_df["LVM"].str.contains(st.session_state.filter_lvm, na=False)]
+                # Depois aplica os outros multiselects selecionados
+                for col in filtros_cols:
+                    if col != coluna_alvo and st.session_state[f"filter_{col}"]:
+                        temp_df = temp_df[temp_df[col].isin(st.session_state[f"filter_{col}"])]
+                return sorted(temp_df[coluna_alvo].unique().tolist())
 
-            # Gráficos e PDF
             st.divider()
+            st.write("2. Agora refine pelos campos específicos (as opções abaixo já estão filtradas pela LVM acima):")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.session_state.filter_Material = st.multiselect("Material", obter_opcoes("Material"), key="ms_mat", default=[v for v in st.session_state.filter_Material if v in obter_opcoes("Material")])
+                st.session_state.filter_Grau = st.multiselect("Grau", obter_opcoes("Grau"), key="ms_grau", default=[v for v in st.session_state.filter_Grau if v in obter_opcoes("Grau")])
+                st.session_state.filter_Larg = st.multiselect("Largura", obter_opcoes("Larg"), key="ms_larg", default=[v for v in st.session_state.filter_Larg if v in obter_opcoes("Larg")])
+            with col2:
+                st.session_state.filter_Obra = st.multiselect("Obra", obter_opcoes("Obra"), key="ms_obra", default=[v for v in st.session_state.filter_Obra if v in obter_opcoes("Obra")])
+                st.session_state.filter_Esp = st.multiselect("Espessura", obter_opcoes("Esp"), key="ms_esp", default=[v for v in st.session_state.filter_Esp if v in obter_opcoes("Esp")])
+                st.session_state.filter_Comp = st.multiselect("Comprimento", obter_opcoes("Comp"), key="ms_comp", default=[v for v in st.session_state.filter_Comp if v in obter_opcoes("Comp")])
+            
+            if st.button("🧹 Limpar Todos os Filtros"):
+                for col in filtros_cols: st.session_state[f"filter_{col}"] = []
+                st.session_state.filter_lvm = ""
+                st.rerun()
+            
+            st.info("Configuração salva. Acesse o '📊 Dashboard' para ver o inventário final.")
+
+    elif menu == "📊 Dashboard":
+        st.title("📊 Painel de Estoque Real")
+        df_full = calcular_saldos()
+        df_v = df_full.copy()
+        
+        # Aplica os filtros salvos na aba anterior
+        if "filter_lvm" in st.session_state and st.session_state.filter_lvm:
+            df_v = df_v[df_v["LVM"].str.contains(st.session_state.filter_lvm, na=False)]
+        
+        filtros_cols = ["Material", "Obra", "Grau", "Esp", "Larg", "Comp"]
+        for col in filtros_cols:
+            if f"filter_{col}" in st.session_state and st.session_state[f"filter_{col}"]:
+                df_v = df_v[df_v[col].isin(st.session_state[f"filter_{col}"])]
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Peças Filtradas", f"{int(df_v['Saldo_Pecas'].sum()):,}")
+        c2.metric("Peso Filtrado (KG)", f"{df_v['Saldo_KG'].sum():,.2f}")
+        c3.metric("Registros em Tela", len(df_v))
+
+        st.divider()
+        if not df_v.empty:
             col_btn, _ = st.columns([1, 3])
-            if col_btn.button("📥 Gerar Relatório PDF"):
-                st.download_button("💾 Baixar PDF", gerar_pdf(df_v), "estoque.pdf", "application/pdf")
+            if col_btn.button("📥 Baixar Relatório PDF"):
+                st.download_button("💾 Clique para Salvar", gerar_pdf(df_v), f"estoque_{datetime.now().strftime('%d%m%Y')}.pdf", "application/pdf")
 
-            g1, g2 = st.columns(2)
-            with g1: st.plotly_chart(px.pie(df_v, values="Saldo_Pecas", names="Obra", hole=0.4, title="Peças por Obra"), use_container_width=True)
-            with g2: st.plotly_chart(px.bar(df_v.groupby("Grau")["Saldo_KG"].sum().reset_index(), x="Grau", y="Saldo_KG", title="Peso por Grau (KG)", color="Grau"), use_container_width=True)
-
-            st.dataframe(df_v.drop(columns=["Impacto", "Qtd_Inicial", "Peso_N"], errors="ignore"), use_container_width=True, hide_index=True)
-        else: st.info("Sem dados disponíveis no estoque.")
+            st.plotly_chart(px.pie(df_v, values="Saldo_Pecas", names="Obra", hole=0.4, title="Peças por Obra"), use_container_width=True)
+            st.dataframe(df_v, use_container_width=True, hide_index=True)
+        else:
+            st.warning("Nenhum dado encontrado para os filtros selecionados.")
 
     elif menu == "🔄 Movimentações":
-        st.subheader("🔄 Registro de Entradas e Saídas")
-        tipo = st.selectbox("Operação", ["ENTRADA", "SAIDA", "TMA", "TDMA"])
-        f = st.file_uploader("Arquivo Excel para Importação", type="xlsx")
-        if f and st.button("🚀 Importar"):
+        st.title("🔄 Registro de Movimentos")
+        tipo = st.selectbox("Tipo", ["SAIDA", "ENTRADA", "TMA", "TDMA"])
+        f = st.file_uploader("Arquivo Excel", type="xlsx")
+        if f and st.button("Importar"):
             df_up = pd.read_excel(f, dtype=str)
-            df_up = padronizar_nome_colunas(df_up)
             coll = get_coll("movements")
             for _, r in df_up.iterrows():
                 d = r.to_dict(); d["Tipo"] = tipo; d["timestamp"] = firestore.SERVER_TIMESTAMP
                 coll.add(d)
-            st.success("Importado com sucesso!"); st.rerun()
+            st.success("Importado com sucesso!")
 
     elif menu == "📂 Base Mestra":
-        st.subheader("📂 Gestão da Base Mestra")
-        f = st.file_uploader("Upload Master", type="xlsx")
-        if f and st.button("🚀 Sincronizar"):
+        st.title("📂 Sincronização")
+        f = st.file_uploader("Excel Master", type="xlsx")
+        if f and st.button("Sincronizar"):
             df_m = pd.read_excel(f, dtype=str)
             coll = get_coll("master_csv_store")
             for d in coll.stream(): d.reference.delete()
@@ -260,41 +269,30 @@ def main():
                 coll.document(f"p_{i}").set({"part": i, "csv_data": p})
             st.cache_data.clear()
             st.success("Sincronizado!")
-        
-        st.divider()
-        st.subheader("🗑️ Zona de Limpeza")
-        c1, c2 = st.columns(2)
-        if c1.button("🗑️ APAGAR BASE MESTRA"):
-            for d in get_coll("master_csv_store").stream(): d.reference.delete()
-            st.cache_data.clear(); st.rerun()
-        if c2.button("🗑️ APAGAR MOVIMENTAÇÕES"):
-            for d in get_coll("movements").stream(): d.reference.delete()
-            st.rerun()
-
-    elif menu == "👤 Minha Conta":
-        st.subheader("👤 Minha Conta")
-        st.write(f"Utilizador logado: {st.session_state.user['username']}")
-        nova_p = st.text_input("Nova Senha", type="password")
-        if st.button("Atualizar"):
-            docs = get_coll("users").where("username", "==", st.session_state.user['username']).get()
-            for d in docs: d.reference.update({"password": nova_p})
-            st.success("Senha atualizada!")
 
     elif menu == "👥 Gestão de Acessos":
-        st.subheader("👥 Usuários do Sistema")
+        st.title("👥 Gestão de Usuários")
         with st.form("u"):
-            nu, np = st.text_input("Username"), st.text_input("Senha")
+            nu, np = st.text_input("User"), st.text_input("Senha")
             nv = st.selectbox("Nível", ["Operador", "Admin"])
             if st.form_submit_button("Criar"):
-                get_coll("users").add({"username": nu.lower().strip(), "password": np, "nivel": nv})
+                get_coll("users").add({"username": nu.lower(), "password": np, "nivel": nv})
                 st.rerun()
         for u, d in users.items():
             c1, c2 = st.columns([3, 1])
             c1.write(f"• **{u}** ({d['nivel']})")
             if u != "marcius.arruda" and c2.button("Remover", key=u):
-                docs = get_coll("users").where("username", "==", u).get()
-                for doc in docs: doc.reference.delete()
+                for doc in get_coll("users").where("username", "==", u).get(): doc.reference.delete()
                 st.rerun()
+
+    elif menu == "👤 Minha Conta":
+        st.title("👤 Configurações")
+        st.write(f"Logado como: {st.session_state.user['username']}")
+        nova = st.text_input("Nova Senha", type="password")
+        if st.button("Salvar"):
+            docs = get_coll("users").where("username", "==", st.session_state.user['username']).get()
+            for d in docs: d.reference.update({"password": nova})
+            st.success("Senha atualizada!")
 
 if __name__ == "__main__":
     main()
