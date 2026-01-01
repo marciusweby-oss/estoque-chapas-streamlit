@@ -179,7 +179,9 @@ def main():
             for col in filtros_cols:
                 if f"filter_{col}" not in st.session_state: st.session_state[f"filter_{col}"] = []
             if "filter_lvm" not in st.session_state: st.session_state.filter_lvm = ""
+            
             st.session_state.filter_lvm = st.text_input("1. Digite a LVM para restringir as opções", value=st.session_state.filter_lvm).upper().strip()
+            
             def obter_opcoes(coluna_alvo):
                 temp_df = df_full.copy()
                 if st.session_state.filter_lvm:
@@ -188,6 +190,8 @@ def main():
                     if col != coluna_alvo and st.session_state[f"filter_{col}"]:
                         temp_df = temp_df[temp_df[col].isin(st.session_state[f"filter_{col}"])]
                 return sorted(temp_df[coluna_alvo].unique().tolist())
+            
+            st.divider()
             col1, col2 = st.columns(2)
             with col1:
                 st.session_state.filter_Material = st.multiselect("Material", obter_opcoes("Material"), key="ms_mat", default=[v for v in st.session_state.filter_Material if v in obter_opcoes("Material")])
@@ -197,6 +201,7 @@ def main():
                 st.session_state.filter_Obra = st.multiselect("Obra", obter_opcoes("Obra"), key="ms_obra", default=[v for v in st.session_state.filter_Obra if v in obter_opcoes("Obra")])
                 st.session_state.filter_Esp = st.multiselect("Espessura", obter_opcoes("Esp"), key="ms_esp", default=[v for v in st.session_state.filter_Esp if v in obter_opcoes("Esp")])
                 st.session_state.filter_Comp = st.multiselect("Comprimento", obter_opcoes("Comp"), key="ms_comp", default=[v for v in st.session_state.filter_Comp if v in obter_opcoes("Comp")])
+            
             if st.button("🧹 Limpar Todos os Filtros"):
                 for col in filtros_cols: st.session_state[f"filter_{col}"] = []
                 st.session_state.filter_lvm = ""
@@ -213,14 +218,18 @@ def main():
         for col in filtros_cols:
             if f"filter_{col}" in st.session_state and st.session_state[f"filter_{col}"]:
                 df_v = df_v[df_v[col].isin(st.session_state[f"filter_{col}"])]
+        
         c1, c2, c3 = st.columns(3)
-        c1.metric("Peças Filtradas", f"{int(df_v['Saldo_Pecas'].sum()):,}")
-        c2.metric("Peso Filtrado (KG)", f"{df_v['Saldo_KG'].sum():,.2f}")
-        c3.metric("Registros em Tela", len(df_v))
+        total_pecas = int(df_v['Saldo_Pecas'].sum())
+        total_peso = df_v['Saldo_KG'].sum()
+        
+        c1.metric("Peças Filtradas", f"{total_pecas:,}")
+        c2.metric("Peso Filtrado (KG)", f"{total_peso:,.2f}")
+        c3.metric("Total de Itens em Tela", f"{total_pecas:,}")
+        
         st.divider()
         if not df_v.empty:
-            col_btn, _ = st.columns([1, 3])
-            if col_btn.button("📥 Baixar Relatório PDF"):
+            if st.button("📥 Baixar Relatório PDF"):
                 st.download_button("💾 Clique para Salvar", gerar_pdf(df_v), f"estoque_{datetime.now().strftime('%d%m%Y')}.pdf", "application/pdf")
             st.plotly_chart(px.pie(df_v, values="Saldo_Pecas", names="Obra", hole=0.4, title="Peças por Obra"), use_container_width=True)
             st.dataframe(df_v, use_container_width=True, hide_index=True)
@@ -236,17 +245,15 @@ def main():
             for _, r in df_up.iterrows():
                 d = r.to_dict(); d["Tipo"] = tipo; d["timestamp"] = firestore.SERVER_TIMESTAMP
                 coll.add(d)
-            st.success("Importado com sucesso!")
+            st.success("Importado!")
         
-        # BOTÃO PARA ZERAR MOVIMENTAÇÕES (Apenas Admin)
         if st.session_state.user['nivel'] == "Admin":
             st.divider()
-            st.subheader("⚠️ Zona de Perigo")
-            conf_mov = st.checkbox("Confirmo que desejo apagar TODO o histórico de movimentações.")
+            st.subheader("⚠️ Manutenção")
+            conf_mov = st.checkbox("Confirmar limpeza de movimentos")
             if st.button("Zerar Movimentações") and conf_mov:
-                coll = get_coll("movements")
-                for doc in coll.stream(): doc.reference.delete()
-                st.warning("Histórico de movimentações removido."); time.sleep(1); st.rerun()
+                for doc in get_coll("movements").stream(): doc.reference.delete()
+                st.warning("Movimentações zeradas!"); time.sleep(1); st.rerun()
 
     # --- ABA: BASE MESTRA ---
     elif menu == "📂 Base Mestra":
@@ -262,15 +269,14 @@ def main():
             st.cache_data.clear()
             st.success("Sincronizado!")
         
-        # BOTÃO PARA ZERAR BASE MESTRA (Apenas Admin)
-        st.divider()
-        st.subheader("⚠️ Zona de Perigo")
-        conf_base = st.checkbox("Confirmo que desejo apagar a Base Mestra atual.")
-        if st.button("Zerar Base Mestra") and conf_base:
-            coll = get_coll("master_csv_store")
-            for d in coll.stream(): d.reference.delete()
-            st.cache_data.clear()
-            st.warning("Base Mestra removida."); time.sleep(1); st.rerun()
+        if st.session_state.user['nivel'] == "Admin":
+            st.divider()
+            st.subheader("⚠️ Manutenção")
+            conf_base = st.checkbox("Confirmar limpeza da base mestra")
+            if st.button("Zerar Base Mestra") and conf_base:
+                for d in get_coll("master_csv_store").stream(): d.reference.delete()
+                st.cache_data.clear()
+                st.warning("Base Mestra zerada!"); time.sleep(1); st.rerun()
 
     # --- ABA: GESTÃO DE ACESSOS ---
     elif menu == "👥 Gestão de Acessos":
@@ -291,7 +297,6 @@ def main():
     # --- ABA: MINHA CONTA ---
     elif menu == "👤 Minha Conta":
         st.title("👤 Configurações")
-        st.write(f"Logado como: {st.session_state.user['username']}")
         nova = st.text_input("Nova Senha", type="password")
         if st.button("Salvar"):
             docs = get_coll("users").where("username", "==", st.session_state.user['username']).get()
@@ -300,3 +305,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
