@@ -215,7 +215,7 @@ def main():
 
     # --- ABA: DASHBOARD ---
     elif menu == "📊 Dashboard":
-        st.title("📊 Painel de Stock")
+        st.title("📊 Painel de Estoque")
         df_full = calcular_saldos()
         df_v = df_full.copy()
         if st.session_state.get('filter_lvm'):
